@@ -145,6 +145,12 @@ sed -i 's/"robot_type": "z0"/"robot_type": "z02"/' data/raw/*/meta/info.json
 
 ### 4. 数据适配（统一脚本）
 
+`scripts/adapt_z02.py` 是数据适配的核心脚本，集成了以下功能：
+
+- **数据分析**：统计各数据集的 episodes、frames、成功/失败分布、intervention 分布
+- **Returns 计算**：计算每个时间步的累积回报
+- **数据划分**：按成功/失败分层划分训练/验证/测试集
+
 ```bash
 # 执行所有步骤（分析 + 计算 returns + 划分数据）
 python scripts/adapt_z02.py --all
@@ -155,10 +161,29 @@ python scripts/adapt_z02.py --compute_returns  # 计算 returns
 python scripts/adapt_z02.py --split_data       # 划分数据
 ```
 
-**参数配置**（在脚本开头修改）：
+**参数配置**（在脚本开头的 `CONFIG` 字典中修改）：
 
 ```python
 CONFIG = {
+    # 数据集列表
+    'datasets': ['2026.09.08', '2026.09.15', '2026.09.15_2'],
+    
+    # 数据集属性（成功/失败标签、intervention支持）
+    'dataset_properties': {
+        '2026.09.08': {
+            'is_success': True,            # 纯遥操作，全部标记为成功
+            'has_intervention': False,     # 没有 intervention 字段
+        },
+        '2026.09.15': {
+            'is_success': None,            # 从 reward 字段推导（0=成功，-10000=失败）
+            'has_intervention': True,
+        },
+        '2026.09.15_2': {
+            'is_success': None,
+            'has_intervention': True,
+        },
+    },
+    
     # Returns 计算参数
     'gamma': 1.0,                    # 折扣因子（1.0 = 无折扣）
     'failure_reward': -300.0,        # 失败终止奖励（官方推荐 -300）
@@ -170,6 +195,19 @@ CONFIG = {
     'test_ratio': 0.1,               # 测试集比例
     'random_seed': 42,               # 随机种子
 }
+```
+
+**Return 计算逻辑**：
+
+```python
+# 每步 reward = -1
+# 成功最后一步 reward = 0
+# 失败最后一步 reward = -300 (failure_reward)
+
+# 成功 episode (100帧): return 范围 [-99, 0]
+# 失败 episode (100帧): return 范围 [-399, -300]
+
+# 归一化: return / |return_min| → [-1, 0]
 ```
 
 **输出**：
@@ -185,6 +223,21 @@ CONFIG = {
   Train: 181 episodes, 164269 frames (成功=169, 失败=12)
   Val: 20 episodes, 18123 frames (成功=19, 失败=1)
   Test: 27 episodes, 24843 frames (成功=24, 失败=3)
+```
+
+**生成文件**：
+
+```
+data/
+├── raw/
+│   ├── 2026.09.08/meta/returns_z0.parquet    # Returns sidecar
+│   ├── 2026.09.15/meta/returns_z0.parquet
+│   └── 2026.09.15_2/meta/returns_z0.parquet
+└── splits/
+    ├── train.json                             # 训练集详情
+    ├── val.json                               # 验证集详情
+    ├── test.json                              # 测试集详情
+    └── summary.json                           # 汇总信息
 ```
 
 ### 6. 测试数据加载
