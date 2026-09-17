@@ -6,4 +6,5 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.DS_Store
+.DS_Storecheckpoints/
+checkpoints/

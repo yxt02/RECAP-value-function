@@ -13,7 +13,8 @@ train_ratio: 0.8
 val_ratio: 0.1
 test_ratio: 0.1
 preserve_existing_splits: true
-cameras: [cam2, cam3, cam4]
+cameras: [cam2]
+#cameras: [cam2,cam3,cam4]
 datasets:
   - name: '2026.09.08'
     outcome_override: true

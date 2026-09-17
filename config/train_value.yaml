@@ -1,0 +1,31 @@
+# Value Function 训练配置
+# 使用方法: python scripts/train_value.py --config config/train_value.yaml
+
+# 数据配置
+data_dir: data/raw
+train_datasets:
+  - 2026.09.15
+  - 2026.09.15_2
+  - 2026.09.16_error
+val_dataset: 2026.09.08
+tag: z02_fail2000_v1
+cameras:
+  - cam2
+
+# 模型配置
+siglip_path: models/siglip2-so400m-patch14-224
+gemma_path: models/gemma-3-270m
+freeze_vlm: true
+
+# 训练超参数
+batch_size: 2
+num_epochs: 3
+lr: 1.0e-4
+
+# 步数限制（避免内存溢出）
+max_samples: 500
+max_steps: 50
+val_steps: 20
+
+# 保存
+save_dir: checkpoints

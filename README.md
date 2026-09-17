@@ -43,23 +43,55 @@ python scripts/adapt_z02.py --config config/z02_data.yaml --split_data       # �
 ### 4. 训练
 
 ```bash
-python scripts/smoke_test.py  # 冒烟测试
+# 冒烟测试（验证环境）
+python scripts/train_value.py --smoke_test
+
+# 使用默认配置训练（自动读取 config/train_value.yaml）
+python scripts/train_value.py
+
+# 覆盖单个参数
+python scripts/train_value.py --num_epochs 10 --max_steps 200
 ```
 
-## 配置参数
+## 配置文件
 
-编辑 `config/z02_data.yaml`：
+### 训练配置 `config/train_value.yaml`
 
 ```yaml
-tag: z02_fail2000_v1        # returns标签
-gamma: 1.0                  # 折扣因子
-failure_reward: -2000.0     # 失败惩罚
-return_scale: 4000.0        # return归一化范围
-max_episode_steps: 2000     # 最大步数
-train_ratio: 0.8            # 训练集比例
-val_ratio: 0.1              # 验证集比例
-test_ratio: 0.1             # 测试集比例
-cameras: [cam2, cam3, cam4] # 摄像头
+# 数据
+data_dir: data/raw
+train_datasets: [2026.09.15, 2026.09.15_2, 2026.09.16_error]
+val_dataset: 2026.09.08
+tag: z02_fail2000_v1
+cameras: [cam2]
+
+# 模型
+siglip_path: models/siglip2-so400m-patch14-224
+gemma_path: models/gemma-3-270m
+freeze_vlm: true
+
+# 训练超参数
+batch_size: 2
+num_epochs: 3
+lr: 1.0e-4
+max_samples: 500
+max_steps: 50
+val_steps: 20
+save_dir: checkpoints
+```
+
+### 数据配置 `config/z02_data.yaml`
+
+```yaml
+tag: z02_fail2000_v1
+gamma: 1.0
+failure_reward: -2000.0
+return_scale: 4000.0
+max_episode_steps: 2000
+train_ratio: 0.8
+val_ratio: 0.1
+test_ratio: 0.1
+cameras: [cam2, cam3, cam4]
 ```
 
 ## 数据统计
@@ -74,13 +106,16 @@ cameras: [cam2, cam3, cam4] # 摄像头
 ## 目录结构
 
 ```
-├── config/                 # 配置文件
-├── data/raw/               # 原始数据
-├── data/splits/            # 数据划分
-├── models/                 # 预训练模型
-├── process/                # returns计算
-├── recap_datasets/         # 数据加载
-└── scripts/
-    ├── adapt_z02.py        # 数据适配脚本
-    └── smoke_test.py       # 冒烟测试
+├── config/
+│   ├── train_value.yaml      # 训练配置
+│   └── z02_data.yaml          # 数据配置
+├── data/raw/                  # 原始数据
+├── data/splits/               # 数据划分
+├── models/                    # 预训练模型
+├── process/                   # returns计算
+├── recap_datasets/            # 数据加载
+├── scripts/
+│   ├── adapt_z02.py           # 数据适配脚本
+│   └── train_value.py         # 训练脚本
+└── checkpoints/               # 模型保存
 ```
