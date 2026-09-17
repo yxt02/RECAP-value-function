@@ -1,0 +1,18 @@
+{
+  "verified_frames": 96,
+  "batch_start_indices": [
+    0,
+    54240,
+    64144,
+    123456,
+    164256,
+    246896
+  ],
+  "max_feature_abs_error": 0.00384521484375,
+  "max_online_vs_cached_prediction_abs_error": 0.0,
+  "encoder_output_dtypes": [
+    "torch.float32"
+  ],
+  "cache": "/home/zoyi/my_work/RECAP-value-function-main/data/cache/value_features_v1/train-5c17583476bd5428ca68",
+  "checkpoint_reload": "passed"
+}

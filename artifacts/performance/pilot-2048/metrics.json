@@ -1,0 +1,362 @@
+[
+  {
+    "epoch": 1,
+    "global_step": 121,
+    "train": {
+      "mse": 0.05780695751309395,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.3173706940001466,
+      "samples_per_second": 777995.0692766439
+    },
+    "val": {
+      "mse": 0.03537978604435921,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0033929229998648225,
+      "samples_per_second": 8357824.154809884
+    }
+  },
+  {
+    "epoch": 2,
+    "global_step": 242,
+    "train": {
+      "mse": 0.019826345145702362,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10216290100015613,
+      "samples_per_second": 2416849.0594959874
+    },
+    "val": {
+      "mse": 0.017248017713427544,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0020711410002149933,
+      "samples_per_second": 13691447.805977449
+    }
+  },
+  {
+    "epoch": 3,
+    "global_step": 363,
+    "train": {
+      "mse": 0.01328666228801012,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09943970699987403,
+      "samples_per_second": 2483038.0173764364
+    },
+    "val": {
+      "mse": 0.014568286016583443,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.002054118000160088,
+      "samples_per_second": 13804641.85308226
+    }
+  },
+  {
+    "epoch": 4,
+    "global_step": 484,
+    "train": {
+      "mse": 0.011754713021218777,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10096824299989748,
+      "samples_per_second": 2445449.296104118
+    },
+    "val": {
+      "mse": 0.013969119638204575,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0019042509998143942,
+      "samples_per_second": 14891343.444166847
+    }
+  },
+  {
+    "epoch": 5,
+    "global_step": 605,
+    "train": {
+      "mse": 0.010947373695671558,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10038833599992358,
+      "samples_per_second": 2459573.0093327467
+    },
+    "val": {
+      "mse": 0.01342873927205801,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.002028993999829254,
+      "samples_per_second": 13975954.201395676
+    }
+  },
+  {
+    "epoch": 6,
+    "global_step": 726,
+    "train": {
+      "mse": 0.010390830226242542,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10075398499975563,
+      "samples_per_second": 2450648.0456571653
+    },
+    "val": {
+      "mse": 0.013960441574454308,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0020893890000479587,
+      "samples_per_second": 13571717.763433399
+    }
+  },
+  {
+    "epoch": 7,
+    "global_step": 847,
+    "train": {
+      "mse": 0.009946569800376892,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09885062199964523,
+      "samples_per_second": 2497835.4497137307
+    },
+    "val": {
+      "mse": 0.013337885960936546,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0019452989999990677,
+      "samples_per_second": 14576693.018883815
+    }
+  },
+  {
+    "epoch": 8,
+    "global_step": 968,
+    "train": {
+      "mse": 0.009351609274744987,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09952490499972555,
+      "samples_per_second": 2480910.9280603016
+    },
+    "val": {
+      "mse": 0.012874051928520203,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0018979960000251594,
+      "samples_per_second": 14940596.390190832
+    }
+  },
+  {
+    "epoch": 9,
+    "global_step": 1089,
+    "train": {
+      "mse": 0.009037488140165806,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09879812500003027,
+      "samples_per_second": 2499163.1432622634
+    },
+    "val": {
+      "mse": 0.013069868087768555,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.001938138999776129,
+      "samples_per_second": 14630499.787626697
+    }
+  },
+  {
+    "epoch": 10,
+    "global_step": 1210,
+    "train": {
+      "mse": 0.008770957589149475,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10016412599998148,
+      "samples_per_second": 2465078.864743348
+    },
+    "val": {
+      "mse": 0.013183661736547947,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.002064068999970914,
+      "samples_per_second": 13736937.096174013
+    }
+  },
+  {
+    "epoch": 11,
+    "global_step": 1331,
+    "train": {
+      "mse": 0.008454966358840466,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09905917000014597,
+      "samples_per_second": 2492575.6400550357
+    },
+    "val": {
+      "mse": 0.012797757051885128,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0024631269998280914,
+      "samples_per_second": 11512633.08454863
+    }
+  },
+  {
+    "epoch": 12,
+    "global_step": 1452,
+    "train": {
+      "mse": 0.008348471485078335,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09997354100005396,
+      "samples_per_second": 2469777.8227252243
+    },
+    "val": {
+      "mse": 0.012541539967060089,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.002056776999779686,
+      "samples_per_second": 13786475.166098261
+    }
+  },
+  {
+    "epoch": 13,
+    "global_step": 1573,
+    "train": {
+      "mse": 0.0079334182664752,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09975895800016588,
+      "samples_per_second": 2475091.9023763468
+    },
+    "val": {
+      "mse": 0.01269329059869051,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0018937520003419195,
+      "samples_per_second": 14973721.143544244
+    }
+  },
+  {
+    "epoch": 14,
+    "global_step": 1694,
+    "train": {
+      "mse": 0.007850682362914085,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09897774699993533,
+      "samples_per_second": 2494627.6641903277
+    },
+    "val": {
+      "mse": 0.013001533225178719,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0019318700001349498,
+      "samples_per_second": 14678617.012911394
+    }
+  },
+  {
+    "epoch": 15,
+    "global_step": 1815,
+    "train": {
+      "mse": 0.007681760471314192,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.09923707400002968,
+      "samples_per_second": 2488108.620764123
+    },
+    "val": {
+      "mse": 0.012298091314733028,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.001929621999806841,
+      "samples_per_second": 14694650.359539561
+    }
+  },
+  {
+    "epoch": 16,
+    "global_step": 1936,
+    "train": {
+      "mse": 0.0074341376312077045,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10045836600011171,
+      "samples_per_second": 2457859.9991306774
+    },
+    "val": {
+      "mse": 0.012009448371827602,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0024577079998380214,
+      "samples_per_second": 11537987.39727053
+    }
+  },
+  {
+    "epoch": 17,
+    "global_step": 2057,
+    "train": {
+      "mse": 0.007282072212547064,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10033280700008618,
+      "samples_per_second": 2460935.625769643
+    },
+    "val": {
+      "mse": 0.012676960788667202,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.001903844000025856,
+      "samples_per_second": 14894495.352834579
+    }
+  },
+  {
+    "epoch": 18,
+    "global_step": 2178,
+    "train": {
+      "mse": 0.007199592422693968,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10005022699988331,
+      "samples_per_second": 2467884.902703155
+    },
+    "val": {
+      "mse": 0.012075950391590595,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0019185299997843686,
+      "samples_per_second": 14779942.55830849
+    }
+  },
+  {
+    "epoch": 19,
+    "global_step": 2299,
+    "train": {
+      "mse": 0.007010622415691614,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10141432999989775,
+      "samples_per_second": 2434689.3710947963
+    },
+    "val": {
+      "mse": 0.012125883251428604,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0022633919998042984,
+      "samples_per_second": 12528245.874252131
+    }
+  },
+  {
+    "epoch": 20,
+    "global_step": 2420,
+    "train": {
+      "mse": 0.006871050223708153,
+      "samples": 246913,
+      "steps": 121,
+      "seconds": 0.10168594400010988,
+      "samples_per_second": 2428187.1467025103
+    },
+    "val": {
+      "mse": 0.012051325291395187,
+      "samples": 28359,
+      "steps": 14,
+      "seconds": 0.0019202339999537799,
+      "samples_per_second": 14766620.84416818
+    }
+  }
+]

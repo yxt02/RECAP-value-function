@@ -1,0 +1,53 @@
+{"workers": 0, "batch_size": 32, "samples_per_second": 188.1014107256054, "measured_samples": 768, "startup_and_warmup_seconds": 0.799950517999946}
+{"workers": 2, "batch_size": 32, "samples_per_second": 394.45692650084726, "measured_samples": 768, "startup_and_warmup_seconds": 3.915634852999915}
+{"workers": 4, "batch_size": 32, "samples_per_second": 761.4707001873568, "measured_samples": 768, "startup_and_warmup_seconds": 7.309415597999987}
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+Exception ignored in: <function _MultiProcessingDataLoaderIter.__del__ at 0x7f9913955080>
+Traceback (most recent call last):
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 1663, in __del__
+    self._shutdown_workers()
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 1627, in _shutdown_workers
+    w.join(timeout=_utils.MP_STATUS_CHECK_INTERVAL)
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/multiprocessing/process.py", line 149, in join
+    res = self._popen.wait(timeout)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/multiprocessing/popen_fork.py", line 40, in wait
+    if not wait([self.sentinel], timeout):
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/multiprocessing/connection.py", line 948, in wait
+    ready = selector.select(timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/selectors.py", line 415, in select
+    fd_event_list = self._selector.poll(timeout)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/site-packages/torch/utils/data/_utils/signal_handling.py", line 73, in handler
+    _error_if_any_worker_fails()
+RuntimeError: DataLoader worker (pid 13326) is killed by signal: Aborted. 
+{"workers": 8, "batch_size": 32, "samples_per_second": 1391.2690116095202, "measured_samples": 768, "startup_and_warmup_seconds": 14.46107563499993}
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+terminate called without an active exception
+Exception ignored in: <function _MultiProcessingDataLoaderIter.__del__ at 0x7f9913955080>
+Traceback (most recent call last):
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 1663, in __del__
+    self._shutdown_workers()
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/site-packages/torch/utils/data/dataloader.py", line 1627, in _shutdown_workers
+    w.join(timeout=_utils.MP_STATUS_CHECK_INTERVAL)
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/multiprocessing/process.py", line 149, in join
+    res = self._popen.wait(timeout)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/multiprocessing/popen_fork.py", line 40, in wait
+    if not wait([self.sentinel], timeout):
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/multiprocessing/connection.py", line 948, in wait
+    ready = selector.select(timeout)
+            ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/selectors.py", line 415, in select
+    fd_event_list = self._selector.poll(timeout)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/zoyi/anaconda3/envs/value_function/lib/python3.11/site-packages/torch/utils/data/_utils/signal_handling.py", line 73, in handler
+    _error_if_any_worker_fails()
+RuntimeError: DataLoader worker (pid 13362) is killed by signal: Aborted. 

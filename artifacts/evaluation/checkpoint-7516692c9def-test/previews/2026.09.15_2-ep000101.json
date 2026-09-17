@@ -1,0 +1,14 @@
+{
+  "identity": {
+    "source": "/home/zoyi/my_work/RECAP-value-function-main/data/raw/2026.09.15_2/videos/chunk-000/observation.images.cam2/episode_000101.mp4",
+    "size": 5549228,
+    "mtime_ns": 1789532004125096104,
+    "frames": 1116,
+    "fps": 30.0,
+    "codec": "libvpx-vp9",
+    "crf": 32,
+    "cpu_used": 8
+  },
+  "seconds": 0.9057251060003182,
+  "bytes": 2683817
+}

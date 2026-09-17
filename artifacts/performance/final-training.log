@@ -1,0 +1,68 @@
+2026-09-17 16:09:17,149 INFO Device cuda, configuration {"adaptation_config": "config/z02_data.yaml", "cameras": ["cam2"], "siglip_path": "models/siglip2-so400m-patch14-224", "freeze_vlm": true, "projection_dim": 640, "precision": "bf16", "seed": 42, "torch_threads": 4, "batch_size": 16, "num_workers": 4, "eval_num_workers": 2, "pin_memory": true, "persistent_workers": true, "prefetch_factor": 2, "video_cache_handles": 4, "feature_cache": true, "cache_dir": "data/cache/value_features_v1", "cache_batch_size": 16, "cache_num_workers": 4, "cached_batch_size": 1024, "cached_num_workers": 0, "cache_on_device": true, "num_epochs": 24, "max_total_steps": 5000, "early_stopping_patience": 4, "early_stopping_min_delta": 1e-05, "lr": 0.0001, "warmup_steps": 200, "weight_decay": 0.0, "clip_grad_norm": 1.0, "log_interval": 100, "max_samples": null, "max_steps": null, "val_steps": null, "save_dir": "checkpoints/optimized"}
+2026-09-17 16:09:17,742 INFO Manifest-filtered samples: train=246913 val=28359
+2026-09-17 16:09:23,853 INFO Reusing /home/zoyi/my_work/RECAP-value-function-main/data/cache/value_features_v1/train-5c17583476bd5428ca68
+2026-09-17 16:09:26,232 INFO Reusing /home/zoyi/my_work/RECAP-value-function-main/data/cache/value_features_v1/val-ee4bd82c30de726fd953
+2026-09-17 16:09:26,279 INFO Keeping train features on GPU: 543.5 MiB
+2026-09-17 16:09:26,340 INFO Keeping val features on GPU: 62.4 MiB
+2026-09-17 16:09:26,347 INFO Budget: at most 24 epochs / 5000 optimizer steps; 242 batches per full epoch
+2026-09-17 16:09:26,627 INFO Step 100/242, MSE 0.062874, LR 5.05e-05
+2026-09-17 16:09:26,708 INFO Step 200/242, MSE 0.044048, LR 0.0001
+2026-09-17 16:09:26,749 INFO {"epoch": 1, "global_step": 242, "train": {"mse": 0.03932658210396767, "samples": 246913, "steps": 242, "seconds": 0.3928418830000737, "samples_per_second": 628529.7491662212}, "val": {"mse": 0.020886363461613655, "samples": 28359, "steps": 28, "seconds": 0.004508323000209202, "samples_per_second": 6290079.599820327}}
+2026-09-17 16:09:26,836 INFO Step 100/242, MSE 0.014040, LR 9.98e-05
+2026-09-17 16:09:26,913 INFO Step 200/242, MSE 0.013185, LR 9.94e-05
+2026-09-17 16:09:26,952 INFO {"epoch": 2, "global_step": 484, "train": {"mse": 0.012960566207766533, "samples": 246913, "steps": 242, "seconds": 0.18981799499988483, "samples_per_second": 1300786.6020382114}, "val": {"mse": 0.013957839459180832, "samples": 28359, "steps": 28, "seconds": 0.004317337999964366, "samples_per_second": 6567995.041730056}}
+2026-09-17 16:09:27,040 INFO Step 100/242, MSE 0.011336, LR 9.84e-05
+2026-09-17 16:09:27,119 INFO Step 200/242, MSE 0.011135, LR 9.75e-05
+2026-09-17 16:09:27,158 INFO {"epoch": 3, "global_step": 726, "train": {"mse": 0.01103673130273819, "samples": 246913, "steps": 242, "seconds": 0.19153226599974005, "samples_per_second": 1289143.7900338245}, "val": {"mse": 0.013957937248051167, "samples": 28359, "steps": 28, "seconds": 0.004659239999909914, "samples_per_second": 6086352.418594209}}
+2026-09-17 16:09:27,238 INFO Step 100/242, MSE 0.010311, LR 9.59e-05
+2026-09-17 16:09:27,318 INFO Step 200/242, MSE 0.010098, LR 9.45e-05
+2026-09-17 16:09:27,357 INFO {"epoch": 4, "global_step": 968, "train": {"mse": 0.01009428035467863, "samples": 246913, "steps": 242, "seconds": 0.19388065299972368, "samples_per_second": 1273529.4879502186}, "val": {"mse": 0.013991924934089184, "samples": 28359, "steps": 28, "seconds": 0.004749887000343733, "samples_per_second": 5970005.348976133}}
+2026-09-17 16:09:27,436 INFO Step 100/242, MSE 0.009692, LR 9.22e-05
+2026-09-17 16:09:27,515 INFO Step 200/242, MSE 0.009501, LR 9.04e-05
+2026-09-17 16:09:27,553 INFO {"epoch": 5, "global_step": 1210, "train": {"mse": 0.00939653255045414, "samples": 246913, "steps": 242, "seconds": 0.19188167099991915, "samples_per_second": 1286796.6418839553}, "val": {"mse": 0.01341498363763094, "samples": 28359, "steps": 28, "seconds": 0.003964298000028066, "samples_per_second": 7153399.1569581805}}
+2026-09-17 16:09:27,643 INFO Step 100/242, MSE 0.008811, LR 8.75e-05
+2026-09-17 16:09:27,721 INFO Step 200/242, MSE 0.008761, LR 8.53e-05
+2026-09-17 16:09:27,759 INFO {"epoch": 6, "global_step": 1452, "train": {"mse": 0.008761482313275337, "samples": 246913, "steps": 242, "seconds": 0.19327384199959852, "samples_per_second": 1277528.0842318167}, "val": {"mse": 0.012700110673904419, "samples": 28359, "steps": 28, "seconds": 0.004435961000126554, "samples_per_second": 6392633.335019462}}
+2026-09-17 16:09:27,847 INFO Step 100/242, MSE 0.008535, LR 8.19e-05
+2026-09-17 16:09:27,927 INFO Step 200/242, MSE 0.008358, LR 7.93e-05
+2026-09-17 16:09:27,964 INFO {"epoch": 7, "global_step": 1694, "train": {"mse": 0.008365731686353683, "samples": 246913, "steps": 242, "seconds": 0.19344842200007406, "samples_per_second": 1276374.4710124251}, "val": {"mse": 0.012448040768504143, "samples": 28359, "steps": 28, "seconds": 0.0035852420000992424, "samples_per_second": 7909626.265292095}}
+2026-09-17 16:09:28,052 INFO Step 100/242, MSE 0.008211, LR 7.54e-05
+2026-09-17 16:09:28,131 INFO Step 200/242, MSE 0.007992, LR 7.26e-05
+2026-09-17 16:09:28,169 INFO {"epoch": 8, "global_step": 1936, "train": {"mse": 0.007922071032226086, "samples": 246913, "steps": 242, "seconds": 0.19166554799994628, "samples_per_second": 1288247.8196604333}, "val": {"mse": 0.012798287905752659, "samples": 28359, "steps": 28, "seconds": 0.004516238999713096, "samples_per_second": 6279052.1576633705}}
+2026-09-17 16:09:28,250 INFO Step 100/242, MSE 0.007612, LR 6.84e-05
+2026-09-17 16:09:28,329 INFO Step 200/242, MSE 0.007646, LR 6.53e-05
+2026-09-17 16:09:28,367 INFO {"epoch": 9, "global_step": 2178, "train": {"mse": 0.007610095199197531, "samples": 246913, "steps": 242, "seconds": 0.19346452199988562, "samples_per_second": 1276268.7666249028}, "val": {"mse": 0.012713439762592316, "samples": 28359, "steps": 28, "seconds": 0.00441642200030401, "samples_per_second": 6421063.642439015}}
+2026-09-17 16:09:28,446 INFO Step 100/242, MSE 0.007238, LR 6.09e-05
+2026-09-17 16:09:28,526 INFO Step 200/242, MSE 0.007247, LR 5.77e-05
+2026-09-17 16:09:28,564 INFO {"epoch": 10, "global_step": 2420, "train": {"mse": 0.007257804740220308, "samples": 246913, "steps": 242, "seconds": 0.19273456300015823, "samples_per_second": 1281101.8510495285}, "val": {"mse": 0.012232347391545773, "samples": 28359, "steps": 28, "seconds": 0.003572783999970852, "samples_per_second": 7937218.752064888}}
+2026-09-17 16:09:28,652 INFO Step 100/242, MSE 0.007152, LR 5.31e-05
+2026-09-17 16:09:28,731 INFO Step 200/242, MSE 0.007045, LR 4.99e-05
+2026-09-17 16:09:28,769 INFO {"epoch": 11, "global_step": 2662, "train": {"mse": 0.007061732932925224, "samples": 246913, "steps": 242, "seconds": 0.19316370600017763, "samples_per_second": 1278255.2532550485}, "val": {"mse": 0.01366900373250246, "samples": 28359, "steps": 28, "seconds": 0.004297357999803353, "samples_per_second": 6598977.448453143}}
+2026-09-17 16:09:28,849 INFO Step 100/242, MSE 0.006804, LR 4.53e-05
+2026-09-17 16:09:28,929 INFO Step 200/242, MSE 0.006830, LR 4.21e-05
+2026-09-17 16:09:28,967 INFO {"epoch": 12, "global_step": 2904, "train": {"mse": 0.006786927580833435, "samples": 246913, "steps": 242, "seconds": 0.19318116600015856, "samples_per_second": 1278140.5697543772}, "val": {"mse": 0.01298985444009304, "samples": 28359, "steps": 28, "seconds": 0.004406900000049063, "samples_per_second": 6434937.223149652}}
+2026-09-17 16:09:29,047 INFO Step 100/242, MSE 0.006605, LR 3.76e-05
+2026-09-17 16:09:29,126 INFO Step 200/242, MSE 0.006617, LR 3.45e-05
+2026-09-17 16:09:29,163 INFO {"epoch": 13, "global_step": 3146, "train": {"mse": 0.006614586804062128, "samples": 246913, "steps": 242, "seconds": 0.19174180100026206, "samples_per_second": 1287734.33372911}, "val": {"mse": 0.011996611952781677, "samples": 28359, "steps": 28, "seconds": 0.0036380510000526556, "samples_per_second": 7794859.334951499}}
+2026-09-17 16:09:29,250 INFO Step 100/242, MSE 0.006413, LR 3.02e-05
+2026-09-17 16:09:29,327 INFO Step 200/242, MSE 0.006467, LR 2.73e-05
+2026-09-17 16:09:29,363 INFO {"epoch": 14, "global_step": 3388, "train": {"mse": 0.006468565668910742, "samples": 246913, "steps": 242, "seconds": 0.18915473900005964, "samples_per_second": 1305346.6589529156}, "val": {"mse": 0.012058808468282223, "samples": 28359, "steps": 28, "seconds": 0.0035345359997336345, "samples_per_second": 8023137.780192772}}
+2026-09-17 16:09:29,442 INFO Step 100/242, MSE 0.006385, LR 2.33e-05
+2026-09-17 16:09:29,519 INFO Step 200/242, MSE 0.006358, LR 2.07e-05
+2026-09-17 16:09:29,557 INFO {"epoch": 15, "global_step": 3630, "train": {"mse": 0.006348814815282822, "samples": 246913, "steps": 242, "seconds": 0.1885285860003023, "samples_per_second": 1309682.9666882644}, "val": {"mse": 0.011639759875833988, "samples": 28359, "steps": 28, "seconds": 0.004341744000157632, "samples_per_second": 6531281.357922701}}
+2026-09-17 16:09:29,643 INFO Step 100/242, MSE 0.006149, LR 1.71e-05
+2026-09-17 16:09:29,721 INFO Step 200/242, MSE 0.006204, LR 1.48e-05
+2026-09-17 16:09:29,758 INFO {"epoch": 16, "global_step": 3872, "train": {"mse": 0.00623796321451664, "samples": 246913, "steps": 242, "seconds": 0.18865198599996802, "samples_per_second": 1308826.3614999722}, "val": {"mse": 0.011607524007558823, "samples": 28359, "steps": 28, "seconds": 0.004313764000016818, "samples_per_second": 6573794.253998493}}
+2026-09-17 16:09:29,843 INFO Step 100/242, MSE 0.006261, LR 1.18e-05
+2026-09-17 16:09:29,920 INFO Step 200/242, MSE 0.006200, LR 9.85e-06
+2026-09-17 16:09:29,957 INFO {"epoch": 17, "global_step": 4114, "train": {"mse": 0.006155360955744982, "samples": 246913, "steps": 242, "seconds": 0.18684019000011176, "samples_per_second": 1321518.2088523293}, "val": {"mse": 0.011665722355246544, "samples": 28359, "steps": 28, "seconds": 0.004310651999730908, "samples_per_second": 6578472.742940209}}
+2026-09-17 16:09:30,035 INFO Step 100/242, MSE 0.006194, LR 7.41e-06
+2026-09-17 16:09:30,113 INFO Step 200/242, MSE 0.006128, LR 5.91e-06
+2026-09-17 16:09:30,150 INFO {"epoch": 18, "global_step": 4356, "train": {"mse": 0.006116956938058138, "samples": 246913, "steps": 242, "seconds": 0.18855924699983007, "samples_per_second": 1309470.3092818353}, "val": {"mse": 0.011657311581075191, "samples": 28359, "steps": 28, "seconds": 0.004148469000028854, "samples_per_second": 6835786.847184783}}
+2026-09-17 16:09:30,228 INFO Step 100/242, MSE 0.006032, LR 4.1e-06
+2026-09-17 16:09:30,307 INFO Step 200/242, MSE 0.006081, LR 3.08e-06
+2026-09-17 16:09:30,343 INFO {"epoch": 19, "global_step": 4598, "train": {"mse": 0.006076779682189226, "samples": 246913, "steps": 242, "seconds": 0.18897511200020745, "samples_per_second": 1306588.654784393}, "val": {"mse": 0.011712170206010342, "samples": 28359, "steps": 28, "seconds": 0.0036576080001395894, "samples_per_second": 7753088.768323657}}
+2026-09-17 16:09:30,421 INFO Step 100/242, MSE 0.005992, LR 1.96e-06
+2026-09-17 16:09:30,499 INFO Step 200/242, MSE 0.006032, LR 1.43e-06
+2026-09-17 16:09:30,536 INFO {"epoch": 20, "global_step": 4840, "train": {"mse": 0.006056200247257948, "samples": 246913, "steps": 242, "seconds": 0.18799462300012237, "samples_per_second": 1313403.049039535}, "val": {"mse": 0.011694572865962982, "samples": 28359, "steps": 28, "seconds": 0.0039876889995866804, "samples_per_second": 7111366.777520721}}
+2026-09-17 16:09:30,536 INFO Early stopping after 4 validation checks without sufficient improvement

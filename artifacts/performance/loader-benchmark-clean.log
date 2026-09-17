@@ -1,0 +1,4 @@
+{"workers": 0, "batch_size": 32, "samples_per_second": 210.82857183592316, "measured_samples": 768, "startup_and_warmup_seconds": 0.7005792649999876}
+{"workers": 2, "batch_size": 32, "samples_per_second": 395.8548784201932, "measured_samples": 768, "startup_and_warmup_seconds": 3.92849517500008}
+{"workers": 4, "batch_size": 32, "samples_per_second": 743.4037523699054, "measured_samples": 768, "startup_and_warmup_seconds": 7.678922430000057}
+{"workers": 8, "batch_size": 32, "samples_per_second": 1140.9646848386656, "measured_samples": 768, "startup_and_warmup_seconds": 14.92362785299997}
