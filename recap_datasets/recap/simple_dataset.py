@@ -23,10 +23,11 @@ class SimpleValueDataset(Dataset):
                  normalize_returns=True, image_size=224, cameras=None,
                  split_file=None, episodes=None, return_scale=None,
                  include_state=True, include_actions=True, min_episode_steps=2,
-                 image_processor_path=None, cache_episodes=4, cache_videos=6):
+                 image_processor_path=None, cache_episodes=4, cache_videos=6, decoder_threads=1):
         self._video_caps = OrderedDict()
         self._episode_cache = OrderedDict()
         self._pid = os.getpid()
+        self.decoder_threads = max(1, int(decoder_threads))
         self.dataset_path = Path(dataset_path).resolve()
         if robot_type != 'z02':
             raise ValueError('This local loader supports z02 only')
@@ -61,10 +62,11 @@ class SimpleValueDataset(Dataset):
             selected = eps if selected is None else selected & eps
         self.parquet_files, self.episode_ids, self.index_mapping = [], [], []
         self._paths_by_episode = {}
+        self._task_indices = {}
         found = set()
         excluded = set(self.adaptation.get('excluded_episodes', [])) if self.adaptation else set()
         for path in sorted((self.dataset_path / 'data').rglob('episode_*.parquet')):
-            ids = pq.read_table(path, columns=['episode_index', 'frame_index']).to_pandas()
+            ids = pq.read_table(path, columns=['episode_index', 'frame_index', 'task_index']).to_pandas()
             if len(ids) == 0 or ids.episode_index.nunique() != 1:
                 raise ValueError(f'Invalid episode: {path}')
             ep = int(ids.episode_index.iloc[0]); found.add(ep)
@@ -77,6 +79,8 @@ class SimpleValueDataset(Dataset):
             labels = self.returns_data.get(ep)
             if labels is None or len(labels['return']) != len(ids):
                 raise ValueError(f'Incomplete labels for {path}')
+            if not np.isfinite(labels['return']).all():
+                raise ValueError(f'Non-finite labels for {path}')
             if normalize_returns and (np.min(labels['return']) < -self.return_scale or np.max(labels['return']) > 0):
                 raise ValueError(f'Labels outside [-return_scale,0]: {path}; use matching contract')
             for cam in self.cameras:
@@ -84,6 +88,7 @@ class SimpleValueDataset(Dataset):
                     raise FileNotFoundError(self.video_path(cam, ep))
             self.parquet_files.append(path); self.episode_ids.append(ep)
             self._paths_by_episode[ep] = path
+            self._task_indices[ep] = ids.task_index.to_numpy(dtype=np.int32)
             self.index_mapping.extend((ep, fr) for fr in range(len(ids)))
         if selected is not None and selected - found:
             raise ValueError(f'Split references missing episodes: {selected - found}')
@@ -91,6 +96,7 @@ class SimpleValueDataset(Dataset):
             self.index_mapping = self.index_mapping[:max_samples]
         if not self.index_mapping:
             raise ValueError(f'No eligible samples: {self.dataset_path}')
+        self.index_mapping = np.asarray(self.index_mapping, dtype=np.int64)
         # Match the processor bundled with the SigLIP checkpoint; no ImageNet normalization.
         mean, std = [0.5] * 3, [0.5] * 3
         if image_processor_path:
@@ -123,7 +129,8 @@ class SimpleValueDataset(Dataset):
     def _read_video_frame(self, cam, ep, fr):
         key = (cam, ep)
         if key not in self._video_caps:
-            self._video_caps[key] = cv2.VideoCapture(str(self.video_path(cam, ep)))
+            self._video_caps[key] = cv2.VideoCapture(str(self.video_path(cam, ep)), cv2.CAP_FFMPEG,
+                                                       [cv2.CAP_PROP_N_THREADS, self.decoder_threads])
             if len(self._video_caps) > self.cache_videos:
                 self._video_caps.popitem(last=False)[1].release()
         self._video_caps.move_to_end(key)
@@ -146,13 +153,15 @@ class SimpleValueDataset(Dataset):
         return len(self.index_mapping)
 
     def __getitem__(self, idx):
-        ep, fr = self.index_mapping[idx]
-        df = self._episode(ep); row = df.iloc[fr]
+        ep, fr = map(int, self.index_mapping[idx])
+        self._reset_worker_cache()
+        if self.include_state or self.include_actions:
+            df = self._episode(ep); row = df.iloc[fr]
         value = float(self.returns_data[ep]['return'][fr])
         sample = {
             'images': {f'observation.images.{cam}': self.image_transform(self._read_video_frame(cam, ep, fr)) for cam in self.cameras},
             'image_masks': {f'observation.images.{cam}': True for cam in self.cameras},
-            'prompt': self.tasks[int(row.task_index)],
+            'prompt': self.tasks[int(self._task_indices[ep][fr])],
             'target_values': value / self.return_scale if self.normalize_returns else value,
             'dataset_id': self.dataset_path.name, 'episode_index': ep, 'frame_index': fr,
         }

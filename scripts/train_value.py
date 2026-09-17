@@ -1,372 +1,180 @@
 #!/usr/bin/env python3
-"""
-Value Function 训练脚本
-支持单GPU训练，使用SigLIP2 + Gemma3架构
+"""Local visual value baseline: measured single-GPU training and frozen features.
+
+This is not the language-conditioned 201-bin RECAP critic. See README.
 """
 import argparse
-import gc
+import json
 import logging
-import os
-import sys
+import math
 from pathlib import Path
+import sys
+import time
 
 import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader, Subset
-from transformers import SiglipVisionModel, Gemma3ForCausalLM
+from torch import nn
 
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+from recap_datasets.recap.contracts import resolve_path
+from recap_value.model import ValueModel
+from recap_value.runtime import configure_runtime, load_config, raw_dataset, make_loader, autocast, move_batch
+from recap_value.cache import prepare_features, cache_location, FeatureDataset
 
-from recap_datasets.recap.simple_dataset import SimpleValueDataset
-
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
-class ValueModel(nn.Module):
-    """简化版Value模型"""
-    
-    def __init__(self, siglip_path, gemma_path, freeze_vlm=True):
-        super().__init__()
-        
-        # 加载预训练模型
-        logger.info(f"加载 SigLIP2: {siglip_path}")
-        self.siglip = SiglipVisionModel.from_pretrained(siglip_path)
-        siglip_hidden = self.siglip.config.hidden_size  # 1152
-        
-        logger.info(f"加载 Gemma3: {gemma_path}")
-        self.gemma = Gemma3ForCausalLM.from_pretrained(gemma_path)
-        gemma_hidden = self.gemma.config.hidden_size  # 640
-        
-        # 投影层
-        self.projection = nn.Linear(siglip_hidden, gemma_hidden)
-        
-        # Value head
-        self.value_head = nn.Sequential(
-            nn.Linear(gemma_hidden, 256),
-            nn.ReLU(),
-            nn.Linear(256, 1),
-            nn.Tanh()  # 输出范围 [-1, 1]
-        )
-        
-        # 冻结VLM
-        if freeze_vlm:
-            logger.info("冻结 VLM 参数")
-            for param in self.siglip.parameters():
-                param.requires_grad = False
-            for param in self.gemma.parameters():
-                param.requires_grad = False
-        
-        # 统计参数
-        total_params = sum(p.numel() for p in self.parameters())
-        trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
-        logger.info(f"总参数: {total_params:,}, 可训练: {trainable_params:,}")
-    
-    def forward(self, images):
-        """
-        Args:
-            images: dict with 'observation.images.cam2' key, shape [B, 3, 224, 224]
-        Returns:
-            value: shape [B, 1]
-        """
-        # 获取主视角图像
-        img = images['observation.images.cam2']
-        
-        # SigLIP编码
-        with torch.no_grad() if not self.siglip.training else torch.enable_grad():
-            img_features = self.siglip(img).last_hidden_state[:, 0, :]  # CLS token
-        
-        # 投影
-        projected = self.projection(img_features)
-        
-        # Value预测
-        value = self.value_head(projected)
-        
-        return value
+def epoch(model, loader, config, device, optimizer=None, scheduler=None, max_steps=None):
+    training = optimizer is not None
+    model.train(training)
+    loss_sum = torch.zeros((), device=device)
+    count = steps = 0
+    start = time.perf_counter()
+    limit = min(len(loader), int(max_steps)) if max_steps is not None else len(loader)
+    if limit != len(loader):
+        raise ValueError('Set max_batches on make_loader so workers are not left decoding prefetched batches')
+    with torch.set_grad_enabled(training):
+        for batch in loader:
+            batch = move_batch(batch, device)
+            if training:
+                optimizer.zero_grad(set_to_none=True)
+            with autocast(config, device):
+                predictions = model(images=batch.get('images'), features=batch.get('features'))
+                loss = nn.functional.mse_loss(predictions.float(), batch['target_values'])
+            if not torch.isfinite(loss):
+                raise FloatingPointError('Non-finite loss')
+            if training:
+                loss.backward()
+                nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], config['clip_grad_norm'], error_if_nonfinite=True)
+                optimizer.step(); scheduler.step()
+            n = len(predictions); count += n; steps += 1
+            loss_sum += loss.detach() * n
+            if training and steps % int(config['log_interval']) == 0:
+                logger.info('Step %d/%d, MSE %.6f, LR %.3g', steps, limit, (loss_sum/count).item(), scheduler.get_last_lr()[0])
+    if count == 0:
+        raise ValueError('No samples processed')
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    return {'mse':(loss_sum/count).item(), 'samples':count, 'steps':steps,
+            'seconds':time.perf_counter()-start, 'samples_per_second':count/(time.perf_counter()-start)}
 
 
-def train_epoch(model, dataloader, optimizer, device, epoch, max_steps=100):
-    """训练一个epoch"""
-    model.train()
-    total_loss = 0
-    num_batches = 0
-    
-    for batch_idx, batch in enumerate(dataloader):
-        if batch_idx >= max_steps:
-            logger.info(f"达到最大步数 {max_steps}，停止本epoch")
-            break
-        
-        # 移动数据到设备
-        images = {k: v.to(device).float() for k, v in batch['images'].items()}
-        target = batch['target_values'].to(device).float().unsqueeze(-1)
-        
-        # 前向传播
-        predicted = model(images)
-        
-        # 计算损失
-        loss = nn.MSELoss()(predicted, target)
-        
-        # 反向传播
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # 梯度裁剪
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        
-        optimizer.step()
-        
-        total_loss += loss.item()
-        num_batches += 1
-        
-        if batch_idx % 10 == 0:
-            logger.info(f"Epoch {epoch}, Step {batch_idx}/{max_steps}, Loss: {loss.item():.4f}")
-        
-        # 定期清理显存
-        if batch_idx % 50 == 0:
-            torch.cuda.empty_cache()
-            gc.collect()
-    
-    return total_loss / max(num_batches, 1)
-
-
-def validate(model, dataloader, device, max_steps=50):
-    """验证"""
-    model.eval()
-    total_loss = 0
-    num_batches = 0
-    
-    with torch.no_grad():
-        for batch_idx, batch in enumerate(dataloader):
-            if batch_idx >= max_steps:
-                break
-            
-            images = {k: v.to(device).float() for k, v in batch['images'].items()}
-            target = batch['target_values'].to(device).float().unsqueeze(-1)
-            
-            predicted = model(images)
-            loss = nn.MSELoss()(predicted, target)
-            
-            total_loss += loss.item()
-            num_batches += 1
-    
-    return total_loss / max(num_batches, 1)
+def build_scheduler(optimizer, total_steps, warmup_steps):
+    warmup = min(max(0, int(warmup_steps)), max(0, total_steps-1))
+    def multiplier(step):
+        if warmup and step < warmup:
+            return .01 + .99*step/warmup
+        progress = (step-warmup)/max(1, total_steps-warmup)
+        return .01 + .99*.5*(1+math.cos(math.pi*min(1., progress)))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Value Function 训练")
-    parser.add_argument('--config', type=str, default='config/train_value.yaml', help='配置文件路径')
-    parser.add_argument('--data_dir', type=str, default=None)
-    parser.add_argument('--train_datasets', nargs='+', default=None)
-    parser.add_argument('--val_dataset', type=str, default=None)
-    parser.add_argument('--tag', type=str, default=None)
-    parser.add_argument('--cameras', nargs='+', default=None)
-    parser.add_argument('--batch_size', type=int, default=None)
-    parser.add_argument('--num_epochs', type=int, default=None)
-    parser.add_argument('--lr', type=float, default=None)
-    parser.add_argument('--max_samples', type=int, default=None)
-    parser.add_argument('--max_steps', type=int, default=None)
-    parser.add_argument('--val_steps', type=int, default=None)
-    parser.add_argument('--save_dir', type=str, default=None)
-    parser.add_argument('--siglip_path', type=str, default=None)
-    parser.add_argument('--gemma_path', type=str, default=None)
-    parser.add_argument('--freeze_vlm', action='store_true', default=None)
-    parser.add_argument('--no_freeze_vlm', dest='freeze_vlm', action='store_false')
-    parser.add_argument('--smoke_test', action='store_true', help='运行冒烟测试后退出')
-    
-    args = parser.parse_args()
-    
-    # 加载配置文件
-    from omegaconf import OmegaConf
-    
-    default_config = {
-        'data_dir': 'data/raw',
-        'train_datasets': ['2026.09.15', '2026.09.15_2', '2026.09.16_error'],
-        'val_dataset': '2026.09.08',
-        'tag': 'z02_fail2000_v1',
-        'cameras': ['cam2'],
-        'batch_size': 2,
-        'num_epochs': 3,
-        'lr': 1e-4,
-        'max_samples': 500,
-        'max_steps': 50,
-        'val_steps': 20,
-        'save_dir': 'checkpoints',
-        'siglip_path': 'models/siglip2-so400m-patch14-224',
-        'gemma_path': 'models/gemma-3-270m',
-        'freeze_vlm': True,
-    }
-    
-    # 从配置文件加载
-    if args.config:
-        cfg = OmegaConf.load(args.config)
-        config = OmegaConf.merge(default_config, cfg)
-    else:
-        config = OmegaConf.create(default_config)
-    
-    # 命令行参数覆盖配置文件
-    for key, value in vars(args).items():
-        if key not in ('config', 'smoke_test') and value is not None:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--config', default='config/train_value.yaml')
+    p.add_argument('--smoke_test', action='store_true')
+    p.add_argument('--prepare-cache', action='store_true', help='Build train/val features and exit; no optimizer steps')
+    p.add_argument('--no-cache', action='store_true')
+    for key, typ in [('batch_size',int),('num_epochs',int),('lr',float),('warmup_steps',int),
+                     ('max_total_steps',int),('early_stopping_patience',int),('max_samples',int),('max_steps',int),('val_steps',int),('num_workers',int),('cache_batch_size',int),
+                     ('cached_batch_size',int),('save_dir',str)]:
+        p.add_argument('--'+key, type=typ)
+    args = p.parse_args()
+    config = load_config(args.config)
+    for key,value in vars(args).items():
+        if key not in ('config','smoke_test','prepare_cache','no_cache') and value is not None:
             config[key] = value
-    
-    args = config
-    args.smoke_test = parser.parse_args().smoke_test
-    
-    # 设备
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    logger.info(f"设备: {device}")
-    
-    if torch.cuda.is_available():
-        logger.info(f"GPU: {torch.cuda.get_device_name(0)}")
-        logger.info(f"显存: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
-    
-    # 创建保存目录
-    save_dir = PROJECT_ROOT / args.save_dir
-    save_dir.mkdir(exist_ok=True)
-    
-    # 加载数据集（限制样本数）
-    logger.info("=" * 60)
-    logger.info("加载数据集")
-    logger.info("=" * 60)
-    logger.info(f"每个数据集最大样本数: {args.max_samples}")
-    
-    train_datasets = []
-    for ds_name in args.train_datasets:
-        ds_path = PROJECT_ROOT / args.data_dir / ds_name
-        if ds_path.exists():
-            ds = SimpleValueDataset(
-                dataset_path=str(ds_path),
-                robot_type='z02',
-                tag=args.tag,
-                max_samples=args.max_samples,
-                cameras=args.cameras,
-            )
-            train_datasets.append(ds)
-            logger.info(f"  {ds_name}: {len(ds)} 样本")
-    
-    # 合并训练集
-    from torch.utils.data import ConcatDataset
-    train_dataset = ConcatDataset(train_datasets)
-    train_loader = DataLoader(
-        train_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=True, 
-        num_workers=0,
-        pin_memory=False,
-    )
-    
-    # 验证集
-    val_path = PROJECT_ROOT / args.data_dir / args.val_dataset
-    val_dataset = SimpleValueDataset(
-        dataset_path=str(val_path),
-        robot_type='z02',
-        tag=args.tag,
-        max_samples=args.max_samples,
-        cameras=args.cameras,
-    )
-    val_loader = DataLoader(
-        val_dataset, 
-        batch_size=args.batch_size, 
-        shuffle=False, 
-        num_workers=0,
-        pin_memory=False,
-    )
-    
-    logger.info(f"训练集: {len(train_dataset)} 样本")
-    logger.info(f"验证集: {len(val_dataset)} 样本")
-    
-    # 冒烟测试模式
+    if args.no_cache:
+        config['feature_cache'] = False
     if args.smoke_test:
-        logger.info("=" * 60)
-        logger.info("冒烟测试模式")
-        logger.info("=" * 60)
-        
-        # 测试数据加载
-        batch = next(iter(train_loader))
-        logger.info(f"✓ 数据加载成功")
-        logger.info(f"  图像: {batch['images']['observation.images.cam2'].shape}")
-        logger.info(f"  目标值: {batch['target_values'].shape}")
-        
-        # 测试模型加载
-        model = ValueModel(
-            siglip_path=str(PROJECT_ROOT / args.siglip_path),
-            gemma_path=str(PROJECT_ROOT / args.gemma_path),
-            freeze_vlm=args.freeze_vlm,
-        ).to(device)
-        
-        # 测试前向传播
-        images = {k: v.to(device).float() for k, v in batch['images'].items()}
-        with torch.no_grad():
-            output = model(images)
-        logger.info(f"✓ 前向传播成功")
-        logger.info(f"  输出形状: {output.shape}")
-        
-        # 清理
-        del model, images, output
-        torch.cuda.empty_cache()
-        gc.collect()
-        
-        logger.info("=" * 60)
-        logger.info("冒烟测试通过！可以开始训练。")
-        logger.info("=" * 60)
-        return
-    
-    # 创建模型
-    logger.info("=" * 60)
-    logger.info("创建模型")
-    logger.info("=" * 60)
-    
-    model = ValueModel(
-        siglip_path=str(PROJECT_ROOT / args.siglip_path),
-        gemma_path=str(PROJECT_ROOT / args.gemma_path),
-        freeze_vlm=args.freeze_vlm,
-    ).to(device)
-    
-    # 优化器
-    optimizer = torch.optim.Adam(
-        filter(lambda p: p.requires_grad, model.parameters()),
-        lr=args.lr,
-    )
-    
-    # 训练
-    logger.info("=" * 60)
-    logger.info("开始训练")
-    logger.info(f"  Epochs: {args.num_epochs}")
-    logger.info(f"  每Epoch步数: {args.max_steps}")
-    logger.info(f"  验证步数: {args.val_steps}")
-    logger.info("=" * 60)
-    
-    best_val_loss = float('inf')
-    
-    for epoch in range(args.num_epochs):
-        logger.info(f"\nEpoch {epoch + 1}/{args.num_epochs}")
-        
-        train_loss = train_epoch(model, train_loader, optimizer, device, epoch + 1, args.max_steps)
-        val_loss = validate(model, val_loader, device, args.val_steps)
-        
-        logger.info(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
-        
-        # 保存最佳模型
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            save_path = save_dir / 'best_model.pt'
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-            }, save_path)
-            logger.info(f"保存最佳模型: {save_path}")
-        
-        # 清理显存
-        torch.cuda.empty_cache()
-        gc.collect()
-    
-    logger.info("=" * 60)
-    logger.info("训练完成！")
-    logger.info(f"最佳验证损失: {best_val_loss:.4f}")
-    logger.info("=" * 60)
+        config.update(num_epochs=1, max_steps=4, val_steps=2,
+                      cached_batch_size=min(64, config['cached_batch_size']),
+                      max_samples=min(config.get('max_samples') or 256, 256),
+                      save_dir='artifacts/performance/smoke-cached' if config['feature_cache'] else 'artifacts/performance/smoke-online')
+    configure_runtime(config)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if config['precision']=='bf16' and device.type=='cuda' and not torch.cuda.is_bf16_supported():
+        raise ValueError('GPU does not support BF16; select fp32')
+    if device.type=='cpu':
+        config['precision']='fp32'
+    for key in ('batch_size','cached_batch_size','cache_batch_size','num_epochs','log_interval'):
+        if int(config[key]) < 1:
+            raise ValueError(f'{key} must be positive')
+    for key in ('max_steps','val_steps','max_samples','max_total_steps'):
+        if config[key] is not None and int(config[key]) < 1:
+            raise ValueError(f'{key} must be positive or null')
+    if config['early_stopping_patience'] < 0 or config['early_stopping_min_delta'] < 0:
+        raise ValueError('Early stopping patience and min_delta must be nonnegative')
+    if args.prepare_cache and not config['feature_cache']:
+        raise ValueError('--prepare-cache requires feature_cache=true')
+    logger.info('Device %s, configuration %s', device, json.dumps(config))
+    train_data, val_data = raw_dataset(config,'train'), raw_dataset(config,'val')
+    logger.info('Manifest-filtered samples: train=%d val=%d',len(train_data),len(val_data))
+    all_cached = config['feature_cache'] and all((cache_location(d,config,s)[0]/'manifest.json').exists()
+                                                for d,s in [(train_data,'train'),(val_data,'val')])
+    model = ValueModel(str(resolve_path(config['siglip_path'])), config['cameras'], config['freeze_vlm'],
+                       config['precision'], config['projection_dim'], load_encoder=not all_cached).to(device)
+    if config['feature_cache']:
+        train_data = prepare_features(train_data,model,config,'train',device)
+        val_data = prepare_features(val_data,model,config,'val',device)
+        if args.prepare_cache:
+            logger.info('Feature caches ready; no training performed')
+            return
+        model.siglip = None  # Frozen encoder not needed during cached epochs or head checkpoints.
+        if device.type == 'cuda':
+            torch.cuda.empty_cache()  # Once at phase boundary, never in the training loop.
+        train_loader = make_loader(train_data,config,'train',batch_size=config['cached_batch_size'],workers=config['cached_num_workers'],max_batches=config['max_steps'] or config['max_total_steps'] or sys.maxsize)
+        val_loader = make_loader(val_data,config,'val',batch_size=config['cached_batch_size'],workers=config['cached_num_workers'],max_batches=config['val_steps'])
+    else:
+        train_loader = make_loader(train_data,config,'train',max_batches=config['max_steps'] or config['max_total_steps'] or sys.maxsize)
+        val_loader = make_loader(val_data,config,'val',max_batches=config['val_steps'])
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(trainable, lr=config['lr'], weight_decay=config['weight_decay'], fused=device.type=='cuda')
+    steps_per_epoch = min(len(train_loader),config['max_steps']) if config['max_steps'] else len(train_loader)
+    total_steps = min(config['num_epochs']*steps_per_epoch, config['max_total_steps'] or sys.maxsize)
+    scheduler = build_scheduler(optimizer, total_steps, config['warmup_steps'])
+    logger.info('Budget: at most %d epochs / %d optimizer steps; %d batches per full epoch', config['num_epochs'], total_steps, steps_per_epoch)
+    save_dir = resolve_path(config['save_dir']); save_dir.mkdir(parents=True,exist_ok=True)
+    (save_dir/'config.json').write_text(json.dumps(config,indent=2)+'\n')
+    best = early_best = float('inf'); history=[]
+    global_step = stale_epochs = 0
+    initial = {name:p.detach().clone() for name,p in model.named_parameters() if p.requires_grad} if args.smoke_test else None
+    for ep in range(config['num_epochs']):
+        remaining = total_steps-global_step
+        if remaining <= 0:
+            break
+        train_loader.batch_sampler.limit = min(steps_per_epoch, remaining)
+        training = epoch(model,train_loader,config,device,optimizer,scheduler)
+        global_step += training['steps']
+        validation = epoch(model,val_loader,config,device,max_steps=config['val_steps'])
+        record = {'epoch':ep+1,'global_step':global_step,'train':training,'val':validation}
+        history.append(record); logger.info('%s',json.dumps(record))
+        if validation['mse'] < best:
+            best = validation['mse']
+            # Save frozen encoder identity/path via config/cache manifest, not 1.7GB weights every epoch.
+            state = {k:v for k,v in model.state_dict().items() if not (config['freeze_vlm'] and k.startswith('siglip.'))}
+            tmp=save_dir/'best_model.pt.tmp'
+            torch.save({'format_version':2,'architecture':'siglip_mean_patch_scalar','epoch':ep+1,
+                        'global_step':global_step,'config':config,'model_state_dict':state,'optimizer_state_dict':optimizer.state_dict(),
+                        'scheduler_state_dict':scheduler.state_dict(),'val_loss':best,
+                        'feature_cache_manifest':train_data.manifest if config['feature_cache'] else None},tmp)
+            tmp.replace(save_dir/'best_model.pt')
+        (save_dir/'metrics.json').write_text(json.dumps(history,indent=2)+'\n')
+        if validation['mse'] < early_best-float(config['early_stopping_min_delta']):
+            early_best = validation['mse']; stale_epochs = 0
+        else:
+            stale_epochs += 1
+        if config['early_stopping_patience'] and stale_epochs >= config['early_stopping_patience']:
+            logger.info('Early stopping after %d validation checks without sufficient improvement', stale_epochs)
+            break
+    if args.smoke_test:
+        changed=any(not torch.equal(initial[name],param) for name,param in model.named_parameters() if param.requires_grad)
+        if not changed:
+            raise AssertionError('Optimizer did not update the head')
+        logger.info('Smoke passed: real train/val batches, finite backward gradients and parameter update')
+    (save_dir/'metrics.json').write_text(json.dumps(history,indent=2)+'\n')
 
 
-if __name__ == '__main__':
+if __name__=='__main__':
+    logging.basicConfig(level=logging.INFO,format='%(asctime)s %(levelname)s %(message)s')
     main()

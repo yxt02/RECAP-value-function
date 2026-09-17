@@ -37,7 +37,7 @@ data:
   prefetch_factor: 2
   persistent_workers: false
   pin_memory: false
-  include_state: false  # 09.08 has an unverified historical 20D protocol.
+  include_state: false  # Current data is 22D; this visual value baseline omits state.
   include_actions: false  # V(o, language) does not require actions.
   action_horizon: 10
   action_dim: 32

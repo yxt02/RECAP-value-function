@@ -1,31 +1,43 @@
-# Value Function 训练配置
-# 使用方法: python scripts/train_value.py --config config/train_value.yaml
-
-# 数据配置
-data_dir: data/raw
-train_datasets:
-  - 2026.09.15
-  - 2026.09.15_2
-  - 2026.09.16_error
-val_dataset: 2026.09.08
-tag: z02_fail2000_v1
-cameras:
-  - cam2
-
-# 模型配置
+# Local SigLIP + scalar regression baseline (Gemma was never used by forward).
+# python scripts/train_value.py --smoke_test
+adaptation_config: config/z02_data.yaml
+cameras: [cam2]
 siglip_path: models/siglip2-so400m-patch14-224
-gemma_path: models/gemma-3-270m
 freeze_vlm: true
+projection_dim: 640
+precision: bf16
+seed: 42
+torch_threads: 4
 
-# 训练超参数
-batch_size: 2
-num_epochs: 3
+# Online image batches / one-time frozen-encoder extraction. Measured on RTX 4080 SUPER.
+batch_size: 16
+num_workers: 4
+eval_num_workers: 2
+pin_memory: true
+persistent_workers: true
+prefetch_factor: 2
+video_cache_handles: 4
+
+# No augmentation: frozen deterministic features can be reused across epochs.
+feature_cache: true
+cache_dir: data/cache/value_features_v1
+cache_batch_size: 16
+cache_num_workers: 4
+cached_batch_size: 1024
+cached_num_workers: 0
+cache_on_device: true  # ~0.60 GiB train+val; fall back to CPU if GPU memory is tight.
+
+# Bounded training; full validation every epoch, retain the best validation checkpoint.
+num_epochs: 24
+max_total_steps: 5000  # 242 steps/full epoch: at most ~20.7 passes; early stopping may stop sooner.
+early_stopping_patience: 4
+early_stopping_min_delta: 1.0e-5
 lr: 1.0e-4
-
-# 步数限制（避免内存溢出）
-max_samples: 500
-max_steps: 50
-val_steps: 20
-
-# 保存
-save_dir: checkpoints
+warmup_steps: 200
+weight_decay: 0.0
+clip_grad_norm: 1.0
+log_interval: 100
+max_samples: null
+max_steps: null  # optional batches per training epoch
+val_steps: null
+save_dir: checkpoints/optimized
