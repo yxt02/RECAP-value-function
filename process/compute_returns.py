@@ -43,7 +43,8 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 # Make the rlinf package importable regardless of the cwd the user launched from.
-sys.path.insert(0, str(Path(__file__).resolve().parents[5]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from recap_datasets.recap.contracts import episode_returns, resolve_outcome
 
 logger = logging.getLogger(__name__)
 
@@ -75,15 +76,7 @@ def compute_returns_for_episode(
     Returns:
         Tuple of (returns array, rewards array) for all steps
     """
-    rewards = np.full(episode_length, -1.0, dtype=np.float32)
-    rewards[-1] = 0.0 if is_success else failure_reward
-
-    returns = np.zeros(episode_length, dtype=np.float32)
-    returns[-1] = rewards[-1]
-    for t in range(episode_length - 2, -1, -1):
-        returns[t] = rewards[t] + gamma * returns[t + 1]
-
-    return returns, rewards
+    return episode_returns(episode_length, is_success, gamma, failure_reward)
 
 
 def get_episode_boundaries(episode_indices: np.ndarray) -> list[tuple[int, int, int]]:
@@ -114,6 +107,7 @@ def _process_single_parquet(
     gamma: float,
     failure_reward: float,
     tasks: dict[int, str],
+    outcome_overrides: dict | None = None,
 ) -> pa.Table | None:
     """Process a single parquet file: read only metadata columns, compute returns.
 
@@ -145,37 +139,18 @@ def _process_single_parquet(
     frame_indices = table.column("frame_index").to_numpy().astype(np.int64, copy=False)
     episodes = get_episode_boundaries(ep_indices)
 
-    is_success_col = None
-    if "is_success" in col_names:
-        is_success_col = table.column("is_success").to_pylist()
-    elif "reward" in col_names:
-        # Derive is_success from reward column (z0 convention: 0=success, -10000=failure)
-        reward_col = table.column("reward").to_pylist()
-        # Get the last reward of each episode to determine success/failure
-        is_success_col = []
-        for _, ep_start, ep_end in episodes:
-            last_reward = reward_col[ep_end - 1]
-            # reward=0 means success, reward=-10000 means failure
-            is_success = (last_reward == 0)
-            # Set all frames in episode to the same success value
-            is_success_col.extend([is_success] * (ep_end - ep_start))
-    elif dataset_type != "sft":
-        raise ValueError(
-            f"Column 'is_success' not found in {pq_file}. "
-            f"Non-SFT datasets (dataset_type={dataset_type!r}) require 'is_success' "
-            "to correctly distinguish successful and failed episodes."
-        )
+    outcome_frame = table.to_pandas()
 
     returns_arr = np.empty(n, dtype=np.float32)
     rewards_arr = np.empty(n, dtype=np.float32)
 
-    for _, ep_start, ep_end in episodes:
+    for ep_id, ep_start, ep_end in episodes:
         ep_length = ep_end - ep_start
 
-        if dataset_type == "sft":
-            is_success = True
-        else:
-            is_success = bool(is_success_col[ep_end - 1])
+        override = None
+        if outcome_overrides is not None and str(ep_id) in outcome_overrides:
+            override = outcome_overrides[str(ep_id)]['is_success']
+        is_success = resolve_outcome(outcome_frame.iloc[ep_start:ep_end], dataset_type, override)
 
         ep_returns, ep_rewards = compute_returns_for_episode(
             episode_length=ep_length,
@@ -242,8 +217,7 @@ def process_dataset(
         output_path = dataset_path
     else:
         if output_path.exists():
-            logger.warning(f"Removing existing output: {output_path}")
-            shutil.rmtree(output_path)
+            raise FileExistsError(f'Refusing to overwrite dataset: {output_path}')
         shutil.copytree(dataset_path, output_path)
         logger.info(f"Copied dataset to: {output_path}")
 
@@ -264,6 +238,9 @@ def process_dataset(
                 task_desc = entry.get("task", "")
                 tasks[task_idx] = task_desc
 
+    outcomes_path = output_path / 'meta/episode_outcomes.json'
+    outcome_overrides = json.loads(outcomes_path.read_text()) if outcomes_path.exists() else None
+
     # PyArrow releases GIL during I/O, so threads achieve true parallelism
     result_tables: list[pa.Table] = []
 
@@ -271,7 +248,7 @@ def process_dataset(
     if effective_workers <= 1:
         for pq_file in tqdm(parquet_files, desc="Processing parquet files"):
             tbl = _process_single_parquet(
-                pq_file, dataset_type, gamma, failure_reward, tasks
+                pq_file, dataset_type, gamma, failure_reward, tasks, outcome_overrides
             )
             if tbl is not None:
                 result_tables.append(tbl)
@@ -287,6 +264,7 @@ def process_dataset(
                     gamma,
                     failure_reward,
                     tasks,
+                    outcome_overrides,
                 )
                 futures[fut] = pq_file
 
@@ -366,36 +344,17 @@ def process_dataset(
         json.dump(existing_stats, f, indent=2)
     logger.info("Updated stats.json")
 
-    info_path = output_path / "meta" / "info.json"
-    if info_path.exists():
-        with open(info_path, "r") as f:
-            info = json.load(f)
-
-        info["features"]["return"] = {
-            "dtype": "float32",
-            "shape": [1],
-            "names": None,
-        }
-        info["features"]["reward"] = {
-            "dtype": "float32",
-            "shape": [1],
-            "names": None,
-        }
-        info["features"]["prompt"] = {
-            "dtype": "string",
-            "shape": [1],
-            "names": None,
-        }
-
-        with open(info_path, "w") as f:
-            json.dump(info, f, indent=2)
-        logger.info("Updated info.json with new features")
+    # Sidecar-only columns must not be advertised as raw parquet features.
 
     return stats
 
 
 def compute_returns(cfg: DictConfig) -> None:
     """Main entry point for return computation."""
+    if cfg.get('adaptation_config'):
+        from scripts.adapt_z02 import run
+        run(cfg.adaptation_config, write=True)
+        return
     logging.basicConfig(level=logging.INFO)
     logger.info("Starting return computation...")
     logger.info(f"Config:\n{OmegaConf.to_yaml(cfg)}")
@@ -510,7 +469,7 @@ def compute_returns(cfg: DictConfig) -> None:
         )
 
 
-@hydra.main(version_base=None, config_path=None, config_name="recap_compute_returns")
+@hydra.main(version_base=None, config_path="../config", config_name="recap_compute_returns_z02")
 def main(cfg: DictConfig) -> None:
     compute_returns(cfg)
 

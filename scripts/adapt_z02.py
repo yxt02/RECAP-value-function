@@ -1,446 +1,250 @@
 #!/usr/bin/env python3
-"""
-z02 机器人数据适配脚本
-集成数据准备、Returns 计算、数据划分等功能
-
-使用方法:
-    python scripts/adapt_z02.py --all           # 执行所有步骤
-    python scripts/adapt_z02.py --compute_returns  # 只计算 returns
-    python scripts/adapt_z02.py --split_data       # 只划分数据
-    python scripts/adapt_z02.py --analyze          # 只分析数据
-"""
-
+"""Audit and adapt z02 datasets. Raw parquet/video files are never rewritten."""
 import argparse
-import json
-import logging
-import os
-import sys
 from collections import Counter, defaultdict
+import hashlib
+import json
 from pathlib import Path
+import random
+import shutil
+import sys
+import zipfile
+import stat
 
+import cv2
 import numpy as np
+import pyarrow as pa
 import pyarrow.parquet as pq
+from omegaconf import OmegaConf
 
-# 设置路径
-PROJECT_ROOT = Path(__file__).parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+from recap_datasets.recap.contracts import episode_returns, resolve_outcome, resolve_path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-
-# ============================================================
-# 可配置参数（修改这里）
-# ============================================================
-
-CONFIG = {
-    # 数据路径
-    'data_dir': 'data/raw',                    # 原始数据目录
-    'output_dir': 'data/splits',               # 输出目录
-    
-    # 数据集列表
-    'datasets': [
-        '2026.09.08',                          # 纯遥操作数据
-        '2026.09.15',                          # 混合控制数据
-        '2026.09.15_2',                        # 混合控制数据
-    ],
-    
-    # 数据集属性
-    'dataset_properties': {
-        '2026.09.08': {
-            'is_success': True,                # 全部标记为成功（纯遥操作）
-            'has_intervention': False,         # 没有 intervention 字段
-        },
-        '2026.09.15': {
-            'is_success': None,                # 从 reward 字段推导
-            'has_intervention': True,
-        },
-        '2026.09.15_2': {
-            'is_success': None,                # 从 reward 字段推导
-            'has_intervention': True,
-        },
-    },
-    
-    # Returns 计算参数
-    'gamma': 1.0,                              # 折扣因子（1.0 = 无折扣）
-    'failure_reward': -300.0,                  # 失败终止奖励（官方推荐 -300）
-    'tag': 'z0',                               # Returns 文件标签
-    
-    # 数据划分参数
-    'train_ratio': 0.8,                        # 训练集比例
-    'val_ratio': 0.1,                          # 验证集比例
-    'test_ratio': 0.1,                         # 测试集比例
-    'random_seed': 42,                         # 随机种子
-    
-    # 数据集信息
-    'robot_type': 'z02',
-    'fps': 30,
-    'task_description': 'Pick up the red cup and hang it on the cup holder.',
-}
+compute_returns_for_episode = episode_returns
+JOINT_NAMES = ([f'left_arm_{i}' for i in range(7)] + ['left_hand_binary'] +
+               [f'right_arm_{i}' for i in range(7)] + ['right_hand_binary'] +
+               [f'body_source_{i}' for i in range(4)] + ['head_source_18', 'head_source_19'])
 
 
-# ============================================================
-# 数据分析
-# ============================================================
-
-def analyze_dataset(data_dir: str, dataset_name: str, properties: dict) -> list:
-    """分析单个数据集"""
-    dataset_path = PROJECT_ROOT / data_dir / dataset_name / 'data' / 'chunk-000'
-    
-    if not dataset_path.exists():
-        logger.warning(f"数据集路径不存在: {dataset_path}")
-        return []
-    
-    parquet_files = sorted(dataset_path.glob('episode_*.parquet'))
-    episodes = []
-    
-    for pf in parquet_files:
-        df = pq.read_table(str(pf)).to_pandas()
-        ep_idx = int(df['episode_index'].iloc[0])
-        
-        # 确定成功/失败
-        if properties['is_success'] is not None:
-            is_success = properties['is_success']
-        else:
-            # 从 reward 字段推导
-            last_reward = float(df['reward'].iloc[-1])
-            is_success = (last_reward == 0.0)
-        
-        # 统计 intervention
-        if properties['has_intervention'] and 'intervention' in df.columns:
-            intervention_counts = Counter(df['intervention'])
-            intervention_ratio = intervention_counts[1] / len(df) if len(df) > 0 else 0
-        else:
-            intervention_ratio = 0.0
-        
-        episodes.append({
-            'episode_file': pf.name,
-            'dataset': dataset_name,
-            'episode_index': ep_idx,
-            'total_frames': len(df),
-            'is_success': is_success,
-            'intervention_ratio': intervention_ratio,
-        })
-    
-    return episodes
+def save_json(path, value):
+    """Back up differing metadata once; use atomic replacement."""
+    path = Path(path)
+    content = json.dumps(value, ensure_ascii=False, indent=2) + '\n'
+    if path.exists():
+        if path.read_text() == content:
+            return
+        backup = path.with_name(path.name + '.before_z02_v2')
+        if not backup.exists():
+            shutil.copy2(path, backup)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_suffix(path.suffix + '.tmp')
+    temp.write_text(content)
+    temp.replace(path)
 
 
-def analyze_all_datasets(config: dict):
-    """分析所有数据集"""
-    logger.info("=" * 60)
-    logger.info("数据分析")
-    logger.info("=" * 60)
-    
-    all_episodes = []
-    
-    for ds_name in config['datasets']:
-        properties = config['dataset_properties'][ds_name]
-        episodes = analyze_dataset(config['data_dir'], ds_name, properties)
-        all_episodes.extend(episodes)
-        
-        # 统计
-        success = sum(1 for ep in episodes if ep['is_success'])
-        failure = sum(1 for ep in episodes if not ep['is_success'])
-        total_frames = sum(ep['total_frames'] for ep in episodes)
-        
-        logger.info(f"\n{ds_name}:")
-        logger.info(f"  Episodes: {len(episodes)}")
-        logger.info(f"  Frames: {total_frames}")
-        logger.info(f"  成功: {success}, 失败: {failure}")
-        
-        if properties['has_intervention']:
-            no_int = sum(1 for ep in episodes if ep['intervention_ratio'] == 0)
-            low_int = sum(1 for ep in episodes if 0 < ep['intervention_ratio'] <= 0.3)
-            mid_int = sum(1 for ep in episodes if 0.3 < ep['intervention_ratio'] <= 0.6)
-            high_int = sum(1 for ep in episodes if ep['intervention_ratio'] > 0.6)
-            logger.info(f"  Intervention: 无={no_int}, 低={low_int}, 中={mid_int}, 高={high_int}")
-    
-    # 总体统计
-    total_success = sum(1 for ep in all_episodes if ep['is_success'])
-    total_failure = sum(1 for ep in all_episodes if not ep['is_success'])
-    total_frames = sum(ep['total_frames'] for ep in all_episodes)
-    
-    logger.info(f"\n总计:")
-    logger.info(f"  Episodes: {len(all_episodes)}")
-    logger.info(f"  Frames: {total_frames}")
-    logger.info(f"  成功: {total_success} ({total_success/len(all_episodes)*100:.1f}%)")
-    logger.info(f"  失败: {total_failure} ({total_failure/len(all_episodes)*100:.1f}%)")
-    
-    return all_episodes
+def import_archive(archive, data_dir):
+    archive = Path(archive).resolve()
+    destination = resolve_path(data_dir).resolve()
+    with zipfile.ZipFile(archive) as z:
+        for item in z.infolist():
+            p = (destination / item.filename).resolve()
+            if not p.is_relative_to(destination) or stat.S_ISLNK(item.external_attr >> 16):
+                raise ValueError(f'Unsafe archive member: {item.filename}')
+            if p.exists() and not item.is_dir():
+                raise FileExistsError(f'Refusing to overwrite: {p}')
+        z.extractall(destination)
+    print(f'Imported {archive} into {destination}')
 
 
-# ============================================================
-# Returns 计算
-# ============================================================
-
-def compute_returns_for_episode(
-    episode_length: int,
-    is_success: bool,
-    gamma: float,
-    failure_reward: float,
-) -> tuple:
-    """计算单个 episode 的 returns"""
-    rewards = np.full(episode_length, -1.0, dtype=np.float32)
-    rewards[-1] = 0.0 if is_success else failure_reward
-    
-    returns = np.zeros(episode_length, dtype=np.float32)
-    returns[-1] = rewards[-1]
-    for t in range(episode_length - 2, -1, -1):
-        returns[t] = rewards[t] + gamma * returns[t + 1]
-    
-    return returns, rewards
-
-
-def compute_returns(config: dict):
-    """计算所有数据集的 returns"""
-    logger.info("=" * 60)
-    logger.info("计算 Returns")
-    logger.info("=" * 60)
-    logger.info(f"gamma: {config['gamma']}")
-    logger.info(f"failure_reward: {config['failure_reward']}")
-    logger.info(f"tag: {config['tag']}")
-    
-    for ds_name in config['datasets']:
-        logger.info(f"\n处理数据集: {ds_name}")
-        
-        properties = config['dataset_properties'][ds_name]
-        data_dir = PROJECT_ROOT / config['data_dir'] / ds_name
-        parquet_dir = data_dir / 'data' / 'chunk-000'
-        
-        if not parquet_dir.exists():
-            logger.warning(f"数据目录不存在: {parquet_dir}")
-            continue
-        
-        parquet_files = sorted(parquet_dir.glob('episode_*.parquet'))
-        
-        # 加载 tasks
-        tasks = {}
-        tasks_path = data_dir / 'meta' / 'tasks.jsonl'
-        if tasks_path.exists():
-            with open(tasks_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    entry = json.loads(line.strip())
-                    tasks[entry['task_index']] = entry['task']
-        
-        # 处理每个 parquet 文件
-        all_returns = []
-        all_rewards = []
-        all_episodes = []
-        all_frames = []
-        all_prompts = []
-        
-        for pf in parquet_files:
-            df = pq.read_table(str(pf)).to_pandas()
-            n = len(df)
-            
-            ep_idx = int(df['episode_index'].iloc[0])
-            
-            # 确定成功/失败
-            if properties['is_success'] is not None:
-                is_success = properties['is_success']
-            else:
-                last_reward = float(df['reward'].iloc[-1])
-                is_success = (last_reward == 0.0)
-            
-            # 计算 returns
-            returns, rewards = compute_returns_for_episode(
-                episode_length=n,
-                is_success=is_success,
-                gamma=config['gamma'],
-                failure_reward=config['failure_reward'],
-            )
-            
-            # 收集结果
-            all_returns.extend(returns.tolist())
-            all_rewards.extend(rewards.tolist())
-            all_episodes.extend([ep_idx] * n)
-            all_frames.extend(df['frame_index'].tolist())
-            
-            # prompts
-            task_idx = int(df['task_index'].iloc[0]) if 'task_index' in df.columns else 0
-            prompt = tasks.get(task_idx, config['task_description'])
-            all_prompts.extend([prompt] * n)
-        
-        # 保存到 parquet
-        import pyarrow as pa
-        
-        result_table = pa.table({
-            'episode_index': pa.array(all_episodes, type=pa.int64()),
-            'frame_index': pa.array(all_frames, type=pa.int64()),
-            'return': pa.array(all_returns, type=pa.float32()),
-            'reward': pa.array(all_rewards, type=pa.float32()),
-            'prompt': pa.array(all_prompts, type=pa.string()),
-        })
-        
-        output_path = data_dir / 'meta' / f'returns_{config["tag"]}.parquet'
-        pq.write_table(result_table, str(output_path))
-        
-        logger.info(f"  保存到: {output_path}")
-        logger.info(f"  行数: {len(all_returns)}")
-        logger.info(f"  Return 范围: [{min(all_returns):.2f}, {max(all_returns):.2f}]")
-        
-        # 更新 stats.json
-        stats_path = data_dir / 'meta' / 'stats.json'
-        stats = {}
-        if stats_path.exists():
-            with open(stats_path, 'r') as f:
-                stats = json.load(f)
-        
-        stats['return'] = {
-            'mean': float(np.mean(all_returns)),
-            'std': float(np.std(all_returns)),
-            'min': float(min(all_returns)),
-            'max': float(max(all_returns)),
-        }
-        stats['reward'] = {
-            'mean': float(np.mean(all_rewards)),
-            'std': float(np.std(all_rewards)),
-            'min': float(min(all_rewards)),
-            'max': float(max(all_rewards)),
-        }
-        
-        with open(stats_path, 'w') as f:
-            json.dump(stats, f, indent=2)
-        
-        logger.info(f"  更新 stats.json")
+def audit_dataset(cfg, spec, verify_videos=False):
+    root = resolve_path(cfg['data_dir']) / spec['name']
+    files = sorted((root / 'data').rglob('episode_*.parquet'))
+    if not files:
+        raise FileNotFoundError(root)
+    info = json.loads((root / 'meta/info.json').read_text())
+    tasks = {e['task_index']: e['task'].strip() for e in map(json.loads, (root / 'meta/tasks.jsonl').read_text().splitlines())}
+    episodes, tables, videos, schema_names = [], [], [], set()
+    for p in files:
+        table = pq.read_table(p)
+        schema_names.update(table.column_names)
+        d = table.to_pandas()
+        n = len(d)
+        if not n or d.episode_index.nunique() != 1 or not np.array_equal(d.frame_index, np.arange(n)):
+            raise ValueError(f'Invalid episode/frame indices: {p}')
+        ep = int(d.episode_index.iloc[0])
+        if n > cfg['max_episode_steps']:
+            raise ValueError(f'{p}: {n} exceeds fixed task horizon; create a new return contract')
+        for key in ['observation.joint_positions', 'action.joint_positions']:
+            a = np.stack(d[key])
+            if a.shape != (n, spec['expected_joint_dim']) or not np.isfinite(a).all():
+                raise ValueError(f'{p}: invalid {key} shape/values: {a.shape}')
+            if spec.get('expected_extra_tail') is not None and not np.allclose(a[:, 22:], spec['expected_extra_tail'], atol=1e-7):
+                raise ValueError(f'{p}: unexpected extra tail; joint mapping needs review')
+            if spec['joint_indices'] is not None and not np.isin(a[:, [7, 15]], [0., 1.]).all():
+                raise ValueError(f'{p}: hand binary channels invalid')
+        if not np.allclose(d.timestamp, np.arange(n) / info['fps'], atol=1e-4):
+            raise ValueError(f'{p}: timestamp/frame alignment mismatch')
+        if 'intervention' in d and not d.intervention.isin([0, 1]).all():
+            raise ValueError(f'{p}: invalid intervention flags')
+        success = resolve_outcome(d, override=spec.get('outcome_override'))
+        raw_terminal = float(d.reward.iloc[-1]) if 'reward' in d else None
+        record = dict(dataset=spec['name'], episode_index=ep, episode_file=p.name,
+                      total_frames=n, is_success=success, raw_terminal_reward=raw_terminal,
+                      intervention_ratio=float(d.intervention.mean()) if 'intervention' in d else 1.0,
+                      joint_dim=spec['expected_joint_dim'], excluded=n < cfg['min_episode_steps'])
+        episodes.append(record)
+        ret, rew = episode_returns(n, success, cfg['gamma'], cfg['failure_reward'])
+        if np.min(ret) < -cfg['return_scale']:
+            raise ValueError('Return outside shared support')
+        prompts = [tasks[int(t)] for t in d.task_index]
+        tables.append(pa.table({'episode_index': d.episode_index.to_numpy(),
+                                'frame_index': d.frame_index.to_numpy(), 'return': ret,
+                                'reward': rew, 'prompt': prompts}))
+        for cam in cfg['cameras']:
+            vp = root / info['video_path'].format(episode_chunk=ep // info['chunks_size'],
+                                                 episode_index=ep, video_key=f'observation.images.{cam}')
+            if not vp.is_file():
+                raise FileNotFoundError(vp)
+            if verify_videos:
+                cap = cv2.VideoCapture(str(vp))
+                try:
+                    count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                    fps = cap.get(cv2.CAP_PROP_FPS)
+                    if count != n or abs(fps - info['fps']) > 0.05:
+                        raise ValueError(f'{vp}: video frames/fps {count}/{fps} != {n}/{info["fps"]}')
+                    for pos in sorted({0, n // 2, n - 1}):
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+                        ok, image = cap.read()
+                        if not ok or image is None:
+                            raise ValueError(f'{vp}: cannot decode frame {pos}')
+                finally:
+                    cap.release()
+            videos.append(str(vp.relative_to(root)))
+    if len({e['episode_index'] for e in episodes}) != len(episodes):
+        raise ValueError(f'Duplicate episode ids in {root}')
+    return root, info, tasks, episodes, pa.concat_tables(tables), videos, schema_names
 
 
-# ============================================================
-# 数据划分
-# ============================================================
-
-def split_data(config: dict):
-    """划分数据集"""
-    import random
-    
-    logger.info("=" * 60)
-    logger.info("数据划分")
-    logger.info("=" * 60)
-    
-    # 分析所有数据集
-    all_episodes = []
-    for ds_name in config['datasets']:
-        properties = config['dataset_properties'][ds_name]
-        episodes = analyze_dataset(config['data_dir'], ds_name, properties)
-        all_episodes.extend(episodes)
-    
-    random.seed(config['random_seed'])
-    
-    # 按数据集和成功/失败分组
-    by_dataset = defaultdict(list)
-    for ep in all_episodes:
-        by_dataset[ep['dataset']].append(ep)
-    
-    splits = {'train': [], 'val': [], 'test': []}
-    
-    for ds_name in sorted(by_dataset.keys()):
-        episodes = by_dataset[ds_name]
-        
-        # 分离成功和失败
-        success_eps = [ep for ep in episodes if ep['is_success']]
-        failure_eps = [ep for ep in episodes if not ep['is_success']]
-        
-        random.shuffle(success_eps)
-        random.shuffle(failure_eps)
-        
-        # 划分成功 episodes
-        n = len(success_eps)
-        n_train = int(n * config['train_ratio'])
-        n_val = int(n * config['val_ratio'])
-        
-        splits['train'].extend(success_eps[:n_train])
-        splits['val'].extend(success_eps[n_train:n_train+n_val])
-        splits['test'].extend(success_eps[n_train+n_val:])
-        
-        # 划分失败 episodes
-        n = len(failure_eps)
-        n_train = int(n * config['train_ratio'])
-        n_val = int(n * config['val_ratio'])
-        
-        splits['train'].extend(failure_eps[:n_train])
-        splits['val'].extend(failure_eps[n_train:n_train+n_val])
-        splits['test'].extend(failure_eps[n_train+n_val:])
-    
-    # 打乱顺序
-    for key in splits:
-        random.shuffle(splits[key])
-    
-    # 保存结果
-    output_dir = PROJECT_ROOT / config['output_dir']
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    for split_name, episodes in splits.items():
-        # 统计
-        success = sum(1 for ep in episodes if ep['is_success'])
-        failure = sum(1 for ep in episodes if not ep['is_success'])
-        total_frames = sum(ep['total_frames'] for ep in episodes)
-        
-        output = {
-            'split_name': split_name,
-            'total_episodes': len(episodes),
-            'total_frames': total_frames,
-            'success_episodes': success,
-            'failure_episodes': failure,
-            'episodes': episodes,
-        }
-        
-        output_path = output_dir / f'{split_name}.json'
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(output, f, indent=2, ensure_ascii=False)
-        
-        logger.info(f"{split_name}: {len(episodes)} episodes, {total_frames} frames "
-                    f"(成功={success}, 失败={failure})")
-    
-    # 保存汇总
-    summary = {k: len(v) for k, v in splits.items()}
-    summary_path = output_dir / 'summary.json'
-    with open(summary_path, 'w') as f:
-        json.dump(summary, f, indent=2)
-    
-    logger.info(f"\n保存到: {output_dir}")
+def write_dataset(cfg, spec, audited):
+    root, info, tasks, episodes, table, videos, schema = audited
+    # Sidecars are versioned separately from the original rewards and z0 labels.
+    out = root / 'meta' / f'returns_{cfg["tag"]}.parquet'
+    temp = out.with_suffix('.parquet.tmp')
+    pq.write_table(table, temp)
+    temp.replace(out)
+    contract = {k: cfg[k] for k in ('tag', 'gamma', 'failure_reward', 'return_scale', 'max_episode_steps')}
+    contract.update(task=list(tasks.values()), normalization='raw_return / return_scale',
+                    outcome_override=spec.get('outcome_override'), outcome_source=spec.get('outcome_source', 'raw terminal reward'),
+                    sidecar_sha256=hashlib.sha256(out.read_bytes()).hexdigest())
+    save_json(out.with_suffix('.json'), contract)
+    save_json(root / 'meta/episode_outcomes.json', {str(e['episode_index']): {
+        'is_success': e['is_success'], 'raw_terminal_reward': e['raw_terminal_reward'],
+        'source': spec.get('outcome_source', 'raw terminal reward')} for e in episodes})
+    save_json(root / 'meta/z02_adaptation.json', {
+        'raw_joint_dim': spec['expected_joint_dim'], 'joint_indices': spec['joint_indices'],
+        'target_joint_names': JOINT_NAMES, 'raw_arrays_modified': False,
+        'extra_dimensions': 'Raw tail retained; explicit model selection only',
+        'excluded_episodes': [e['episode_index'] for e in episodes if e['excluded']]})
+    # Metadata describes raw storage, not the padded/model-selected array.
+    features = {k: v for k, v in info['features'].items() if k in schema or v['dtype'] == 'video'}
+    for key in ['observation.joint_positions', 'action.joint_positions']:
+        dim = spec['expected_joint_dim']
+        features[key]['shape'] = [dim]
+        features[key]['names'] = (JOINT_NAMES + ['raw_extra_22', 'raw_extra_23'] if dim == 24 else
+                                  JOINT_NAMES if dim == 22 else [f'legacy_joint_{i}' for i in range(dim)])
+    info.update(robot_type='z02', features=features, total_episodes=len(episodes),
+                total_frames=sum(e['total_frames'] for e in episodes), total_videos=len(videos))
+    save_json(root / 'meta/info.json', info)
 
 
-# ============================================================
-# 主函数
-# ============================================================
+def split_episodes(cfg, episodes):
+    output = resolve_path(cfg['output_dir'])
+    eligible = {(e['dataset'], e['episode_index']): e for e in episodes if not e['excluded']}
+    splits = {s: [] for s in ('train', 'val', 'test')}
+    assigned = set()
+    if cfg.get('preserve_existing_splits', True):
+        for s in splits:
+            p = output / f'{s}.json'
+            if p.exists():
+                for old in json.loads(p.read_text())['episodes']:
+                    key = (old['dataset'], old['episode_index'])
+                    if key in assigned:
+                        raise ValueError(f'Split overlap: {key}')
+                    if key in eligible:
+                        splits[s].append(eligible[key]); assigned.add(key)
+    rng = random.Random(cfg['random_seed'])
+    groups = defaultdict(list)
+    for key, e in eligible.items():
+        if key not in assigned:
+            groups[(e['dataset'], e['is_success'])].append(e)
+    for key in sorted(groups):
+        group = groups[key]; rng.shuffle(group)
+        nt = int(len(group) * cfg['train_ratio']); nv = int(len(group) * cfg['val_ratio'])
+        for s, part in zip(splits, (group[:nt], group[nt:nt+nv], group[nt+nv:])):
+            splits[s].extend(part)
+    summary = {}
+    for s, entries in splits.items():
+        entries.sort(key=lambda e: (e['dataset'], e['episode_index']))
+        counts = dict(total_episodes=len(entries), total_frames=sum(e['total_frames'] for e in entries),
+                      success_episodes=sum(e['is_success'] for e in entries), failure_episodes=sum(not e['is_success'] for e in entries))
+        save_json(output / f'{s}.json', dict(split_name=s, **counts, episodes=entries))
+        summary[s] = counts
+        p = output / 'lerobot' / f'{s}_episodes.txt'; p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(''.join(f'{e["dataset"]}/{e["episode_file"]}\n' for e in entries))
+    save_json(output / 'summary.json', summary)
+    save_json(output / 'excluded.json', {'episodes': [e for e in episodes if e['excluded']], 'reason': 'Fewer than min_episode_steps; retained in raw storage'})
+    return summary
+
+
+def run(config_path, write=False, split=False, verify_videos=False):
+    cfg = OmegaConf.to_container(OmegaConf.load(resolve_path(config_path)), resolve=True)
+    if abs(sum(cfg[k] for k in ('train_ratio', 'val_ratio', 'test_ratio')) - 1) > 1e-8:
+        raise ValueError('Split ratios must sum to one')
+    if cfg['failure_reward'] > -cfg['max_episode_steps'] or cfg['return_scale'] < abs(cfg['failure_reward']) + cfg['max_episode_steps'] - 1:
+        raise ValueError('Task contract must separate failures and cover the full return range')
+    task_texts = set()
+    for spec in cfg['datasets']:
+        task_file = resolve_path(cfg['data_dir']) / spec['name'] / 'meta/tasks.jsonl'
+        task_texts.update(json.loads(line)['task'].strip() for line in task_file.read_text().splitlines())
+    if len(task_texts) != 1:
+        raise ValueError('This shared contract covers one task; use separate contracts for different tasks')
+    episodes, reports = [], {}
+    for spec in cfg['datasets']:
+        audited = audit_dataset(cfg, spec, verify_videos)
+        root, info, tasks, eps, table, videos, schema = audited
+        episodes.extend(eps)
+        if write:
+            write_dataset(cfg, spec, audited)
+        reports[spec['name']] = dict(episodes=len(eps), frames=sum(e['total_frames'] for e in eps),
+            successes=sum(e['is_success'] for e in eps), failures=sum(not e['is_success'] for e in eps),
+            raw_terminal_rewards=dict(Counter(str(e['raw_terminal_reward']) for e in eps)),
+            raw_joint_dim=spec['expected_joint_dim'], videos=len(videos), video_check='count/fps + first/middle/last decode' if verify_videos else 'existence')
+        print(spec['name'], reports[spec['name']], flush=True)
+    summary = split_episodes(cfg, episodes) if split else None
+    if write or split:
+        save_json(resolve_path(cfg['output_dir']) / 'adaptation_report.json', dict(datasets=reports, splits=summary if summary is not None else (json.loads((resolve_path(cfg['output_dir']) / 'summary.json').read_text()) if (resolve_path(cfg['output_dir']) / 'summary.json').exists() else None), config=cfg))
+    if summary:
+        print(json.dumps(summary, indent=2))
+    return reports
+
 
 def main():
-    parser = argparse.ArgumentParser(description='z02 机器人数据适配脚本')
-    parser.add_argument('--all', action='store_true', help='执行所有步骤')
-    parser.add_argument('--analyze', action='store_true', help='分析数据')
-    parser.add_argument('--compute_returns', action='store_true', help='计算 returns')
-    parser.add_argument('--split_data', action='store_true', help='划分数据')
-    
-    args = parser.parse_args()
-    
-    # 如果没有指定任何参数，显示帮助
-    if not any(vars(args).values()):
-        parser.print_help()
-        return
-    
-    logger.info("=" * 60)
-    logger.info("z02 机器人数据适配")
-    logger.info("=" * 60)
-    logger.info(f"项目根目录: {PROJECT_ROOT}")
-    logger.info(f"数据目录: {CONFIG['data_dir']}")
-    logger.info(f"Failure reward: {CONFIG['failure_reward']}")
-    
-    # 执行步骤
-    if args.all or args.analyze:
-        analyze_all_datasets(CONFIG)
-    
-    if args.all or args.compute_returns:
-        compute_returns(CONFIG)
-    
-    if args.all or args.split_data:
-        split_data(CONFIG)
-    
-    logger.info("\n" + "=" * 60)
-    logger.info("完成！")
-    logger.info("=" * 60)
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument('--config', default='config/z02_data.yaml')
+    p.add_argument('--all', action='store_true')
+    p.add_argument('--analyze', action='store_true')
+    p.add_argument('--compute_returns', action='store_true')
+    p.add_argument('--split_data', action='store_true')
+    p.add_argument('--verify-videos', action='store_true')
+    p.add_argument('--import-zip', type=Path)
+    args = p.parse_args()
+    if args.import_zip:
+        cfg = OmegaConf.load(resolve_path(args.config)); import_archive(args.import_zip, cfg.data_dir)
+    if any([args.all, args.analyze, args.compute_returns, args.split_data, args.verify_videos]):
+        run(args.config, args.all or args.compute_returns, args.all or args.split_data, args.verify_videos)
+    else:
+        p.print_help()
 
 
 if __name__ == '__main__':

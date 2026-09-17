@@ -1,8 +1,8 @@
-# Usage: bash examples/offline_rl/advantage_labeling/recap/run_value_sft.sh recap_value_model_sft_z0
+# Local data entry: recap_datasets.recap.loader.create_value_dataloader
+# Model/optimizer settings are retained for a future local training entry point.
 
 defaults:
   - model/recap_value_model@actor.model
-  - hybrid_engines/fsdp@actor.fsdp_config
   - _self_
   - override hydra/job_logging: stdout
 
@@ -10,8 +10,6 @@ hydra:
   run:
     dir: .
   output_subdir: null
-  searchpath:
-    - file://${oc.env:REPO_PATH}/examples/offline_rl/config/
 
 cluster:
   num_nodes: 1
@@ -26,48 +24,25 @@ runner:
     experiment_name: "value_sft_z02"
     logger_backends: ["tensorboard"]
 
-  max_epochs: 30000
-  max_steps: -1
+  max_epochs: 100
+  max_steps: 8000
   val_check_interval: 500
   save_interval: 3000
 
 data:
-  # Match the tag used in compute_returns
-  tag: "z0"
-
-  train_data_paths:
-    - dataset_path: "/home/zoyi/my_work/RECAP-value-function-main/data/raw/2026.09.15"
-      type: "sft"
-      weight: 1.0
-      robot_type: "z02"
-      model_type: "pi05"
-    - dataset_path: "/home/zoyi/my_work/RECAP-value-function-main/data/raw/2026.09.15_2"
-      type: "sft"
-      weight: 1.0
-      robot_type: "z02"
-      model_type: "pi05"
-
-  eval_data_paths:
-    - dataset_path: "/home/zoyi/my_work/RECAP-value-function-main/data/raw/2026.09.08"
-      max_samples: 10000
-      robot_type: "z02"
-      model_type: "pi05"
-
-  train_num_workers: 8
-  eval_num_workers: 4
-  prefetch_factor: 4
+  adaptation_config: config/z02_data.yaml
+  image_processor_path: models/siglip2-so400m-patch14-224
+  train_num_workers: 4
+  eval_num_workers: 2
+  prefetch_factor: 2
   persistent_workers: false
   pin_memory: false
-  include_state: true
-  gamma: 1.0
+  include_state: false  # 09.08 has an unverified historical 20D protocol.
+  include_actions: false  # V(o, language) does not require actions.
   action_horizon: 10
-  normalize_to_minus_one_zero: true
-  include_next_obs: false
-  action_dim: 32  # Pad to 32 for model compatibility
-  robot_type: "z02"
-  model_type: "pi05"
-  balance_weights: true
-  seed: 42
+  action_dim: 32
+  balance_weights: false  # Natural frame distribution; optional dataset_weights below.
+  dataset_weights: {}    # If enabled: values are total probability mass per dataset.
 
 algorithm:
   adv_type: gae

@@ -1,25 +1,6 @@
-# Usage:
-#   python process/compute_returns.py --config-name recap_compute_returns_z0
-
-data:
-  data_root: null
-  train_data_paths:
-    - dataset_path: /home/zoyi/my_work/RECAP-value-function-main/data/raw/2026.09.15
-      type: sft
-      failure_reward: -10000.0
-    - dataset_path: /home/zoyi/my_work/RECAP-value-function-main/data/raw/2026.09.15_2
-      type: sft
-      failure_reward: -10000.0
-    - dataset_path: /home/zoyi/my_work/RECAP-value-function-main/data/raw/2026.09.08
-      type: sft
-      failure_reward: -10000.0
-
-  dataset_type: "sft"
-  gamma: 1.0
-  failure_reward: -10000.0
-  tag: "z0"
-  num_workers: 8
-
+# python process/compute_returns.py --config-name recap_compute_returns_z02
+# Routes to the same adaptation contract as scripts/adapt_z02.py.
+adaptation_config: config/z02_data.yaml
 hydra:
   run:
     dir: .

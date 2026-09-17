@@ -1,328 +1,185 @@
-"""
-简化版数据集加载器
-直接读取Parquet文件和视频帧
-"""
-
+"""Local z02 value data: strict labels, shared scale, split filtering and video I/O."""
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
-import logging
+import os
 from pathlib import Path
-from typing import Any, Optional
 
 import cv2
 import numpy as np
 import pyarrow.parquet as pq
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms
 
-logger = logging.getLogger(__name__)
+from .contracts import load_normalization, read_split
+from .utils import load_returns_sidecar
 
 
 class SimpleValueDataset(Dataset):
-    """简化版Value模型数据集
-    
-    直接读取Parquet文件和视频帧
-    """
-
-    def __init__(
-        self,
-        dataset_path: str,
-        robot_type: str = "z02",
-        tag: Optional[str] = None,
-        action_horizon: int = 10,
-        action_dim: int = 32,
-        max_samples: Optional[int] = None,
-        normalize_returns: bool = True,
-        image_size: int = 224,
-        cameras: list[str] = None,
-    ):
-        self.dataset_path = Path(dataset_path)
-        self.robot_type = robot_type
-        self.action_horizon = action_horizon
-        self.action_dim = action_dim
-        self.max_samples = max_samples
+    def __init__(self, dataset_path, robot_type='z02', tag='z02_fail2000_v1',
+                 action_horizon=10, action_dim=32, max_samples=None,
+                 normalize_returns=True, image_size=224, cameras=None,
+                 split_file=None, episodes=None, return_scale=None,
+                 include_state=True, include_actions=True, min_episode_steps=2,
+                 image_processor_path=None, cache_episodes=4, cache_videos=6):
+        self._video_caps = OrderedDict()
+        self._episode_cache = OrderedDict()
+        self._pid = os.getpid()
+        self.dataset_path = Path(dataset_path).resolve()
+        if robot_type != 'z02':
+            raise ValueError('This local loader supports z02 only')
+        if action_horizon < 1 or action_dim < 22 or (max_samples is not None and max_samples < 1):
+            raise ValueError('Invalid horizon, action_dim or max_samples')
+        self.action_horizon, self.action_dim = action_horizon, action_dim
+        self.include_state, self.include_actions = include_state, include_actions
         self.normalize_returns = normalize_returns
-        self.image_size = image_size
-        self.cameras = cameras or ['cam2']  # 默认只用头部摄像头
-
-        # 加载parquet文件列表
-        data_dir = self.dataset_path / 'data' / 'chunk-000'
-        self.parquet_files = sorted(data_dir.glob('episode_*.parquet'))
-        
-        if not self.parquet_files:
-            raise FileNotFoundError(f"No parquet files found in {data_dir}")
-
-        # 视频目录
-        self.video_dirs = {}
-        for cam in self.cameras:
-            video_dir = self.dataset_path / 'videos' / 'chunk-000' / f'observation.images.{cam}'
-            if video_dir.exists():
-                self.video_dirs[cam] = video_dir
-                logger.info(f"Found video dir for {cam}: {video_dir}")
-            else:
-                logger.warning(f"Video dir not found for {cam}: {video_dir}")
-
-        # 加载任务描述
-        self.tasks = self._load_tasks()
-
-        # 加载returns sidecar
-        self.returns_data = self._load_returns(tag)
-
-        # 构建索引映射：(file_idx, frame_idx)
-        self._build_index_mapping()
-
-        # 图像预处理
+        self.cameras = list(cameras if cameras is not None else ['cam2', 'cam3', 'cam4'])
+        self.cache_episodes, self.cache_videos = max(1, cache_episodes), max(1, cache_videos)
+        self.info = json.loads((self.dataset_path / 'meta/info.json').read_text())
+        self.tasks = {int(e['task_index']): e['task'].strip() for e in map(json.loads, (self.dataset_path / 'meta/tasks.jsonl').read_text().splitlines())}
+        adaptation = self.dataset_path / 'meta/z02_adaptation.json'
+        self.adaptation = json.loads(adaptation.read_text()) if adaptation.exists() else None
+        if (include_state or include_actions) and (self.adaptation is None or self.adaptation['joint_indices'] is None):
+            raise ValueError(f'{self.dataset_path.name}: joint mapping unverified; use image/text only (include_state=False, include_actions=False)')
+        self.joint_indices = self.adaptation['joint_indices'] if self.adaptation else None
+        self.return_scale = return_scale
+        self.contract = None
+        if normalize_returns:
+            if return_scale is None:
+                self.contract = load_normalization(self.dataset_path, tag)
+                self.return_scale = float(self.contract['return_scale'])
+            if not np.isfinite(self.return_scale) or self.return_scale <= 0:
+                raise ValueError('Return scale must be positive and finite')
+        self.returns_data = load_returns_sidecar(self.dataset_path, tag)
+        if self.returns_data is None:
+            raise FileNotFoundError(f'Missing returns sidecar for tag {tag}: {self.dataset_path}')
+        selected = read_split(split_file, self.dataset_path.name) if split_file is not None else None
+        if episodes is not None:
+            eps = set(map(int, episodes))
+            selected = eps if selected is None else selected & eps
+        self.parquet_files, self.episode_ids, self.index_mapping = [], [], []
+        self._paths_by_episode = {}
+        found = set()
+        excluded = set(self.adaptation.get('excluded_episodes', [])) if self.adaptation else set()
+        for path in sorted((self.dataset_path / 'data').rglob('episode_*.parquet')):
+            ids = pq.read_table(path, columns=['episode_index', 'frame_index']).to_pandas()
+            if len(ids) == 0 or ids.episode_index.nunique() != 1:
+                raise ValueError(f'Invalid episode: {path}')
+            ep = int(ids.episode_index.iloc[0]); found.add(ep)
+            if selected is not None and ep not in selected:
+                continue
+            if len(ids) < min_episode_steps or ep in excluded:
+                continue
+            if not np.array_equal(ids.frame_index, np.arange(len(ids))):
+                raise ValueError(f'Non-contiguous frame indices: {path}')
+            labels = self.returns_data.get(ep)
+            if labels is None or len(labels['return']) != len(ids):
+                raise ValueError(f'Incomplete labels for {path}')
+            if normalize_returns and (np.min(labels['return']) < -self.return_scale or np.max(labels['return']) > 0):
+                raise ValueError(f'Labels outside [-return_scale,0]: {path}; use matching contract')
+            for cam in self.cameras:
+                if not self.video_path(cam, ep).is_file():
+                    raise FileNotFoundError(self.video_path(cam, ep))
+            self.parquet_files.append(path); self.episode_ids.append(ep)
+            self._paths_by_episode[ep] = path
+            self.index_mapping.extend((ep, fr) for fr in range(len(ids)))
+        if selected is not None and selected - found:
+            raise ValueError(f'Split references missing episodes: {selected - found}')
+        if max_samples is not None:
+            self.index_mapping = self.index_mapping[:max_samples]
+        if not self.index_mapping:
+            raise ValueError(f'No eligible samples: {self.dataset_path}')
+        # Match the processor bundled with the SigLIP checkpoint; no ImageNet normalization.
+        mean, std = [0.5] * 3, [0.5] * 3
+        if image_processor_path:
+            processor = json.loads((Path(image_processor_path) / 'preprocessor_config.json').read_text())
+            mean, std = processor['image_mean'], processor['image_std']
         self.image_transform = transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.Resize((image_size, image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
+            transforms.ToPILImage(), transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
+            transforms.ToTensor(), transforms.Normalize(mean, std)])
 
-        # 缓存视频捕获对象
-        self._video_caps = {}
+    def video_path(self, cam, ep):
+        return self.dataset_path / self.info['video_path'].format(
+            episode_chunk=ep // self.info.get('chunks_size', 1000), episode_index=ep,
+            video_key=f'observation.images.{cam}')
 
-        logger.info(
-            f"SimpleValueDataset: {dataset_path}, "
-            f"{len(self.parquet_files)} episodes, "
-            f"{len(self)} samples, "
-            f"cameras={list(self.video_dirs.keys())}"
-        )
+    def _reset_worker_cache(self):
+        if os.getpid() != self._pid:
+            self.close()
+            self._episode_cache.clear()
+            self._pid = os.getpid()
 
-    def _load_tasks(self) -> dict[int, str]:
-        """加载任务描述"""
-        tasks_path = self.dataset_path / 'meta' / 'tasks.jsonl'
-        tasks = {}
-        
-        if tasks_path.exists():
-            with open(tasks_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    entry = json.loads(line.strip())
-                    task_idx = entry.get('task_index', len(tasks))
-                    task_desc = entry.get('task', '')
-                    tasks[task_idx] = task_desc
-        
-        return tasks
+    def _episode(self, ep):
+        self._reset_worker_cache()
+        if ep not in self._episode_cache:
+            self._episode_cache[ep] = pq.read_table(self._paths_by_episode[ep]).to_pandas()
+            if len(self._episode_cache) > self.cache_episodes:
+                self._episode_cache.popitem(last=False)
+        self._episode_cache.move_to_end(ep)
+        return self._episode_cache[ep]
 
-    def _load_returns(self, tag: Optional[str]) -> dict:
-        """加载returns数据"""
-        if tag:
-            returns_path = self.dataset_path / 'meta' / f'returns_{tag}.parquet'
-        else:
-            returns_path = self.dataset_path / 'meta' / 'returns.parquet'
-        
-        if not returns_path.exists():
-            logger.warning(f"Returns file not found: {returns_path}")
-            return {}
-        
-        table = pq.read_table(str(returns_path))
-        df = table.to_pandas()
-        
-        # 按episode_index和frame_index组织数据
-        returns_data = {}
-        for _, row in df.iterrows():
-            ep_idx = int(row['episode_index'])
-            fr_idx = int(row['frame_index'])
-            if ep_idx not in returns_data:
-                returns_data[ep_idx] = {}
-            returns_data[ep_idx][fr_idx] = {
-                'return': float(row['return']),
-                'reward': float(row['reward']),
-                'prompt': str(row.get('prompt', 'perform the task')),
-            }
-        
-        # 计算归一化参数
-        if self.normalize_returns and returns_data:
-            all_returns = []
-            for ep_data in returns_data.values():
-                for frame_data in ep_data.values():
-                    all_returns.append(frame_data['return'])
-            
-            if all_returns:
-                self.return_min = min(all_returns)
-                self.return_max = max(all_returns)
-                logger.info(f"Return range: [{self.return_min:.2f}, {self.return_max:.2f}]")
-        
-        return returns_data
-
-    def _build_index_mapping(self):
-        """构建索引映射"""
-        self.index_mapping = []
-        
-        for file_idx, parquet_file in enumerate(self.parquet_files):
-            # 读取这个episode的帧数
-            pf = pq.ParquetFile(str(parquet_file))
-            num_frames = pf.metadata.num_rows
-            
-            for frame_idx in range(num_frames):
-                self.index_mapping.append((file_idx, frame_idx))
-        
-        # 限制样本数
-        if self.max_samples and self.max_samples < len(self.index_mapping):
-            self.index_mapping = self.index_mapping[:self.max_samples]
-
-    def _get_video_cap(self, cam: str, episode_idx: int):
-        """获取视频捕获对象（带缓存）"""
-        key = (cam, episode_idx)
+    def _read_video_frame(self, cam, ep, fr):
+        key = (cam, ep)
         if key not in self._video_caps:
-            video_path = self.video_dirs[cam] / f'episode_{episode_idx:06d}.mp4'
-            if video_path.exists():
-                self._video_caps[key] = cv2.VideoCapture(str(video_path))
-            else:
-                logger.warning(f"Video file not found: {video_path}")
-                return None
-        return self._video_caps[key]
+            self._video_caps[key] = cv2.VideoCapture(str(self.video_path(cam, ep)))
+            if len(self._video_caps) > self.cache_videos:
+                self._video_caps.popitem(last=False)[1].release()
+        self._video_caps.move_to_end(key)
+        cap = self._video_caps[key]
+        if int(cap.get(cv2.CAP_PROP_POS_FRAMES)) != fr:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, fr)
+        ok, frame = cap.read()
+        if not ok or frame is None:
+            raise RuntimeError(f'Cannot decode {self.video_path(cam, ep)} frame {fr}')
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-    def _read_video_frame(self, cam: str, episode_idx: int, frame_idx: int) -> Optional[np.ndarray]:
-        """读取视频帧"""
-        cap = self._get_video_cap(cam, episode_idx)
-        if cap is None:
-            return None
-        
-        # 设置到指定帧
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-        ret, frame = cap.read()
-        
-        if ret:
-            # BGR -> RGB
-            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            return frame
-        return None
+    def _joints(self, values):
+        a = np.asarray(values, dtype=np.float32)
+        if a.shape[-1] != self.adaptation['raw_joint_dim'] or not np.isfinite(a).all():
+            raise ValueError('Raw joint vector disagrees with adaptation metadata')
+        a = a[..., self.joint_indices]
+        return torch.from_numpy(np.pad(a, [(0, 0)] * (a.ndim - 1) + [(0, self.action_dim - 22)]))
 
-    def __len__(self) -> int:
+    def __len__(self):
         return len(self.index_mapping)
 
-    def __getitem__(self, idx: int) -> dict[str, Any]:
-        file_idx, frame_idx = self.index_mapping[idx]
-        parquet_file = self.parquet_files[file_idx]
-        
-        # 读取单帧数据
-        df = pq.read_table(str(parquet_file)).to_pandas()
-        row = df.iloc[frame_idx]
-        
-        # 提取episode_index
-        ep_idx = int(row['episode_index'])
-        
-        # 构建样本
-        sample = {}
-        
-        # 图像：读取视频帧
-        images = {}
-        for cam in self.cameras:
-            frame = self._read_video_frame(cam, ep_idx, frame_idx)
-            if frame is not None:
-                # 应用图像变换
-                images[f'observation.images.{cam}'] = self.image_transform(frame)
-            else:
-                # 返回占位符
-                images[f'observation.images.{cam}'] = torch.zeros(3, self.image_size, self.image_size)
-        
-        sample['images'] = images
-        
-        # 状态：关节位置
-        if 'observation.joint_positions' in row:
-            state = np.array(row['observation.joint_positions'], dtype=np.float32)
-            # Padding到目标维度
-            if len(state) < self.action_dim:
-                state = np.pad(state, (0, self.action_dim - len(state)))
-            elif len(state) > self.action_dim:
-                state = state[:self.action_dim]
-            sample['observation/state'] = torch.from_numpy(state)
-        
-        # 动作
-        if 'action.joint_positions' in row:
-            action = np.array(row['action.joint_positions'], dtype=np.float32)
-            # Padding到目标维度
-            if len(action) < self.action_dim:
-                action = np.pad(action, (0, self.action_dim - len(action)))
-            elif len(action) > self.action_dim:
-                action = action[:self.action_dim]
-            sample['actions'] = torch.from_numpy(action)
-        
-        # 任务描述
-        task_idx = int(row.get('task_index', 0))
-        sample['prompt'] = self.tasks.get(task_idx, 'perform the task')
-        
-        # Return值
-        if ep_idx in self.returns_data and frame_idx in self.returns_data[ep_idx]:
-            raw_return = self.returns_data[ep_idx][frame_idx]['return']
-            
-            if self.normalize_returns:
-                # 归一化到 [-1, 0] 范围
-                denom = abs(self.return_min) if self.return_min != 0 else 1.0
-                sample['target_values'] = raw_return / denom
-            else:
-                sample['target_values'] = raw_return
-        else:
-            sample['target_values'] = 0.0
-        
-        # 元数据
-        sample['episode_index'] = ep_idx
-        sample['frame_index'] = frame_idx
-        
+    def __getitem__(self, idx):
+        ep, fr = self.index_mapping[idx]
+        df = self._episode(ep); row = df.iloc[fr]
+        value = float(self.returns_data[ep]['return'][fr])
+        sample = {
+            'images': {f'observation.images.{cam}': self.image_transform(self._read_video_frame(cam, ep, fr)) for cam in self.cameras},
+            'image_masks': {f'observation.images.{cam}': True for cam in self.cameras},
+            'prompt': self.tasks[int(row.task_index)],
+            'target_values': value / self.return_scale if self.normalize_returns else value,
+            'dataset_id': self.dataset_path.name, 'episode_index': ep, 'frame_index': fr,
+        }
+        if self.include_state:
+            sample['observation/state'] = self._joints(row['observation.joint_positions'])
+        if self.include_actions:
+            indices = np.minimum(np.arange(fr, fr + self.action_horizon), len(df) - 1)
+            sample['actions'] = self._joints(np.stack(df['action.joint_positions'].iloc[indices]))
+            sample['action_is_pad'] = torch.from_numpy(np.arange(fr, fr + self.action_horizon) >= len(df))
         return sample
 
+    def close(self):
+        for cap in getattr(self, '_video_caps', {}).values():
+            cap.release()
+        if hasattr(self, '_video_caps'):
+            self._video_caps.clear()
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state['_video_caps'] = OrderedDict(); state['_episode_cache'] = OrderedDict()
+        return state
+
     def __del__(self):
-        """清理视频捕获对象"""
-        for cap in self._video_caps.values():
-            if cap is not None:
-                cap.release()
+        self.close()
 
 
-def create_simple_dataloader(
-    dataset_path: str,
-    robot_type: str = "z02",
-    tag: Optional[str] = None,
-    batch_size: int = 32,
-    num_workers: int = 4,
-    max_samples: Optional[int] = None,
-    cameras: list[str] = None,
-):
-    """创建简化版数据加载器"""
-    from torch.utils.data import DataLoader
-    
-    dataset = SimpleValueDataset(
-        dataset_path=dataset_path,
-        robot_type=robot_type,
-        tag=tag,
-        max_samples=max_samples,
-        cameras=cameras,
-    )
-    
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
-    
-    return dataloader
-
-
-if __name__ == '__main__':
-    # 测试数据集
-    logging.basicConfig(level=logging.INFO)
-    
-    dataset = SimpleValueDataset(
-        dataset_path='data/raw/2026.09.15',
-        robot_type='z02',
-        tag='z0',
-        max_samples=10,
-        cameras=['cam2', 'cam3', 'cam4'],
-    )
-    
-    print(f"数据集大小: {len(dataset)}")
-    
-    # 获取一个样本
-    sample = dataset[0]
-    print(f"样本keys: {list(sample.keys())}")
-    print(f"images keys: {list(sample['images'].keys())}")
-    for key, img in sample['images'].items():
-        print(f"  {key} shape: {img.shape}, min: {img.min():.3f}, max: {img.max():.3f}")
-    print(f"state shape: {sample['observation/state'].shape}")
-    print(f"actions shape: {sample['actions'].shape}")
-    print(f"prompt: {sample['prompt']}")
-    print(f"target_values: {sample['target_values']:.4f}")
+def create_simple_dataloader(dataset_path, robot_type='z02', tag='z02_fail2000_v1',
+                             batch_size=32, num_workers=4, max_samples=None, cameras=None, **kwargs):
+    ds = SimpleValueDataset(dataset_path, robot_type=robot_type, tag=tag, max_samples=max_samples, cameras=cameras, **kwargs)
+    return DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)

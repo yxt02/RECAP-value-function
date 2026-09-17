@@ -75,3 +75,20 @@ class ReCapMixtureDataset(Dataset):
     def __getitem__(self, idx: int) -> dict[str, Any]:
         ds_idx, sample_idx = self.index_mapping[idx]
         return self.datasets[ds_idx][sample_idx]
+
+    def make_sampler(self, num_samples=None, epoch=0):
+        """Dataset weights specify total probability mass, not per-frame weight.
+
+        Pass this sampler to DataLoader with shuffle=False. Evaluation should
+        iterate the concatenated dataset directly, without replacement.
+        """
+        import math
+        if len(self.weights) != len(self.datasets) or any(not math.isfinite(w) or w < 0 for w in self.weights):
+            raise ValueError('One finite nonnegative weight required per dataset')
+        if sum(self.weights) <= 0 or any(n == 0 for n in self.dataset_lengths):
+            raise ValueError('Weights must have positive sum and datasets must be nonempty')
+        per_frame = torch.cat([torch.full((n,), w / n, dtype=torch.double)
+                               for n, w in zip(self.dataset_lengths, self.weights)])
+        generator = torch.Generator().manual_seed(self.seed + epoch)
+        return torch.utils.data.WeightedRandomSampler(per_frame, num_samples or len(self),
+                                                     replacement=True, generator=generator)

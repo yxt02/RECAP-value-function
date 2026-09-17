@@ -1,0 +1,35 @@
+# Single source of truth for local data preparation and loading.
+data_dir: data/raw
+output_dir: data/splits
+tag: z02_fail2000_v1
+gamma: 1.0
+# Fixed task contract, not estimated from validation/test returns.
+max_episode_steps: 2000
+failure_reward: -2000.0
+return_scale: 4000.0
+min_episode_steps: 2
+random_seed: 42
+train_ratio: 0.8
+val_ratio: 0.1
+test_ratio: 0.1
+preserve_existing_splits: true
+cameras: [cam2, cam3, cam4]
+datasets:
+  - name: '2026.09.08'
+    outcome_override: true
+    outcome_source: 'User: all teleoperated episodes successful'
+    expected_joint_dim: 22
+    joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  - name: '2026.09.15'
+    outcome_override: null
+    expected_joint_dim: 22
+    joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  - name: '2026.09.15_2'
+    outcome_override: null
+    expected_joint_dim: 22
+    joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]
+  - name: '2026.09.16_error'
+    outcome_override: false
+    outcome_source: 'User confirmed on 2026-09-17: all 100 episodes failed; episode 26 terminal reward=0 is a labeling error'
+    expected_joint_dim: 22
+    joint_indices: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21]

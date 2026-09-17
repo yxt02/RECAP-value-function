@@ -27,7 +27,7 @@ def test_data_loading():
     dataset = SimpleValueDataset(
         dataset_path=os.path.join(project_root, 'data/raw/2026.09.15'),
         robot_type='z02',
-        tag='z0',
+        tag='z02_fail2000_v1',
         max_samples=10,
         cameras=['cam2'],
     )
@@ -48,7 +48,7 @@ def test_data_loading():
     
     # 检查状态和动作
     assert sample['observation/state'].shape == (32,), f"Wrong state shape: {sample['observation/state'].shape}"
-    assert sample['actions'].shape == (32,), f"Wrong actions shape: {sample['actions'].shape}"
+    assert sample['actions'].shape == (10, 32), f"Wrong actions shape: {sample['actions'].shape}"
     
     # 检查target_values
     assert isinstance(sample['target_values'], float), f"Wrong target_values type: {type(sample['target_values'])}"
@@ -112,7 +112,7 @@ def test_forward_pass(siglip, gemma, siglip_hidden, gemma_hidden):
     # SigLIP 编码
     logger.info("SigLIP 编码...")
     with torch.no_grad():
-        image_features = siglip(dummy_image).last_hidden_state[:, 0, :]  # CLS token
+        image_features = siglip(dummy_image).last_hidden_state.mean(dim=1)  # Mean patch pooling; SigLIP has no CLS token
     
     # 投影
     logger.info("投影层...")
@@ -145,7 +145,7 @@ def test_batch_loading():
     dataset = SimpleValueDataset(
         dataset_path=os.path.join(project_root, 'data/raw/2026.09.15'),
         robot_type='z02',
-        tag='z0',
+        tag='z02_fail2000_v1',
         max_samples=20,
         cameras=['cam2'],
     )
@@ -178,8 +178,8 @@ def test_compute_returns():
     logger.info("测试 5: Returns 计算")
     logger.info("=" * 60)
     
-    # 检查 returns 文件是否存在
-    returns_path = Path(project_root) / 'data/raw/2026.09.15/meta/returns_z0.parquet'
+    # 检查 returns 文件是否存在（数值/标签正确性由 tests/test_data_pipeline.py 覆盖）
+    returns_path = Path(project_root) / 'data/raw/2026.09.15/meta/returns_z02_fail2000_v1.parquet'
     
     if returns_path.exists():
         logger.info(f"✓ Returns 文件已存在: {returns_path}")

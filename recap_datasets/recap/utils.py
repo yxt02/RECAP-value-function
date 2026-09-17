@@ -65,29 +65,9 @@ def decode_image_struct_batch(samples: dict[str, Any]) -> dict[str, Any]:
     Returns:
         解码后的字典
     """
-    result = {}
-    for key, value in samples.items():
-        if 'image' in key or 'observation.images' in key:
-            # 图像字段：如果是bytes，可能需要解码
-            if isinstance(value, bytes):
-                # 简化处理：保持原样，实际应该用PIL或cv2解码
-                result[key] = value
-            elif isinstance(value, torch.Tensor):
-                result[key] = value
-            elif isinstance(value, np.ndarray):
-                result[key] = torch.from_numpy(value)
-            else:
-                result[key] = value
-        else:
-            # 非图像字段
-            if isinstance(value, np.ndarray):
-                result[key] = torch.from_numpy(value)
-            elif isinstance(value, (list, tuple)):
-                result[key] = torch.tensor(value) if len(value) > 0 else value
-            else:
-                result[key] = value
-    
-    return result
+    # HuggingFace transforms return a list per field; LeRobot stacks it later.
+    from lerobot.datasets.utils import hf_transform_to_torch
+    return hf_transform_to_torch(samples)
 
 
 def load_returns_sidecar(
@@ -113,28 +93,20 @@ def load_returns_sidecar(
         logger.warning(f"Returns sidecar not found: {sidecar_path}")
         return None
     
-    try:
-        import pyarrow.parquet as pq
-        
-        table = pq.read_table(str(sidecar_path))
-        df = table.to_pandas()
-        
-        # 按episode_index分组
-        sidecar = {}
-        for ep_idx in df['episode_index'].unique():
-            ep_data = df[df['episode_index'] == ep_idx]
-            sidecar[int(ep_idx)] = {
-                'return': ep_data['return'].values,
-                'reward': ep_data['reward'].values,
-                'prompt': ep_data['prompt'].values if 'prompt' in ep_data.columns else None,
-            }
-        
-        logger.info(f"Loaded returns sidecar: {len(sidecar)} episodes from {sidecar_path}")
-        return sidecar
-        
-    except Exception as e:
-        logger.error(f"Failed to load returns sidecar: {e}")
-        return None
+    import pyarrow.parquet as pq
+    df = pq.read_table(str(sidecar_path)).to_pandas()
+    if df.duplicated(['episode_index', 'frame_index']).any():
+        raise ValueError(f'Duplicate labels: {sidecar_path}')
+    if not np.isfinite(df[['return', 'reward']].to_numpy()).all():
+        raise ValueError(f'Non-finite labels: {sidecar_path}')
+    sidecar = {}
+    for ep, group in df.groupby('episode_index'):
+        group = group.sort_values('frame_index')
+        if not np.array_equal(group.frame_index, np.arange(len(group))):
+            raise ValueError(f'Missing/non-contiguous frames in {sidecar_path}, episode {ep}')
+        sidecar[int(ep)] = {key: group[key].to_numpy() for key in ('return', 'reward', 'frame_index')}
+        sidecar[int(ep)]['prompt'] = group['prompt'].to_numpy() if 'prompt' in group else None
+    return sidecar
 
 
 def load_task_descriptions(dataset_path: Path) -> Optional[dict[int, str]]:
