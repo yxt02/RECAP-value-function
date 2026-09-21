@@ -1,6 +1,5 @@
 """Deterministic local runtime, episode manifests and bounded DataLoader workers."""
 import random
-import os
 from pathlib import Path
 
 import cv2
@@ -10,8 +9,8 @@ import torch
 from omegaconf import OmegaConf
 from torch.utils.data import ConcatDataset, DataLoader, Subset, BatchSampler, RandomSampler, SequentialSampler
 
-from recap_datasets.recap.contracts import resolve_path, read_split
-from recap_datasets.recap.simple_dataset import SimpleValueDataset
+from submodules.contracts import resolve_path, read_split
+from submodules.datasets import SimpleValueDataset
 
 
 def configure_runtime(config):
@@ -23,9 +22,6 @@ def configure_runtime(config):
         torch.cuda.manual_seed_all(seed)
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-    # Spawned workers inherit a small BLAS/OpenMP budget.
-    for key in ('OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'OPENBLAS_NUM_THREADS'):
-        os.environ[key] = '1'
 
 
 def init_worker(worker_id):

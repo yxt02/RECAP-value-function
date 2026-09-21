@@ -1,5 +1,5 @@
 # Local SigLIP + scalar regression baseline (Gemma was never used by forward).
-# python scripts/recap.py value train --smoke_test
+# python scripts/value_function.py value train --smoke_test
 adaptation_config: config/z02_data.yaml
 cameras: [cam2]
 siglip_path: models/siglip2-so400m-patch14-224

@@ -1,9 +1,0 @@
-# python process/compute_returns.py --config-name recap_compute_returns_z02
-# Routes to the same adaptation contract as scripts/recap.py data prepare.
-adaptation_config: config/z02_data.yaml
-hydra:
-  run:
-    dir: .
-  output_subdir: null
-  job:
-    chdir: false

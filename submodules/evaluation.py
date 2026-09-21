@@ -1,6 +1,21 @@
 """Read-only evaluation statistics; bootstrap independent episodes, never frames."""
 import numpy as np
-from scipy.stats import spearmanr
+
+
+def average_ranks(x):
+    """Ranks of x with tied values sharing their mean rank (scipy's 'average' method)."""
+    order=np.argsort(x,kind='stable'); n=len(x)
+    ordered=x[order]
+    starts=np.flatnonzero(np.r_[True,ordered[1:]!=ordered[:-1]])
+    ends=np.r_[starts[1:],n]
+    ranks=np.empty(n,dtype=np.float64)
+    ranks[order]=np.repeat((starts+ends-1)/2.0,ends-starts)
+    return ranks
+
+
+def spearman(y,p):
+    """Spearman rank correlation, equal to scipy.stats.spearmanr(y,p).statistic."""
+    return float(np.corrcoef(average_ranks(y),average_ranks(p))[0,1])
 
 
 def regression(y, p):
@@ -8,7 +23,7 @@ def regression(y, p):
     if y.shape != p.shape or y.ndim != 1 or len(y)==0 or not np.isfinite(y).all() or not np.isfinite(p).all():
         raise ValueError('Expected aligned finite nonempty one-dimensional predictions/targets')
     e=p-y; mse=float(np.mean(e*e)); variance=float(np.var(y))
-    rho=float(spearmanr(y,p).statistic) if np.ptp(y)>0 and np.ptp(p)>0 else None
+    rho=spearman(y,p) if np.ptp(y)>0 and np.ptp(p)>0 else None
     return dict(frames=len(y),mse=mse,rmse=float(np.sqrt(mse)),mae=float(np.abs(e).mean()),
                 bias=float(e.mean()),p90_absolute_error=float(np.quantile(np.abs(e),.90)),
                 r2=1-mse/variance if variance>0 else None,spearman=rho)

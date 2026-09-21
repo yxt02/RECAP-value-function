@@ -1,19 +1,21 @@
 # 脚本入口与输入输出接口
 
-`scripts/recap.py` 是本工程唯一的命令行入口。数据准备、训练及评估实现位于 `recap_value/workflows/`，按功能拆分以便测试和复用；无需安装 RLinf。
+`scripts/value_function.py` 是本工程唯一的命令行入口。数据准备、训练及评估实现位于 `scripts/*_workflow.py`，按功能拆分以便测试和复用；无需安装 RLinf。
+
+代码只放在两处：`scripts/` 存放命令行入口和三个工作流，`submodules/` 存放被它们复用的核心模块（模型、缓存、评估统计、特征加载、数据加载、共享合同）。`tests/` 为单元测试。数据集的加载与回报计算已并入这两处，不再有独立的 `recap_datasets/` 或 `process/` 目录。
 
 ```bash
 conda activate value_function
 cd /home/zoyi/my_work/RECAP-value-function-main
-python scripts/recap.py --help
-python scripts/recap.py data --help
-python scripts/recap.py value train --help
-python scripts/recap.py report evaluate --help
+python scripts/value_function.py --help
+python scripts/value_function.py data --help
+python scripts/value_function.py value train --help
+python scripts/value_function.py report evaluate --help
 ```
 
-所有相对输入和输出路径均相对**工程根目录**，也可传绝对路径；从其他目录调用时使用入口的绝对路径。各工作流提供 `main(argv=None)`，传入字符串参数列表可供 Python 调用，不修改全局 `sys.argv`。训练的 `epoch`、`build_scheduler` 和数据准备的 `run` 仍可直接导入。
+所有相对输入和输出路径均相对**工程根目录**，也可传绝对路径；从其他目录调用时使用入口的绝对路径。每个工作流同时提供 `main(argv=None)` 路由和 `main_<command>(argv=None)` 子命令入口，传入字符串参数列表可供 Python 调用，不修改全局 `sys.argv`。训练的 `epoch`、`build_scheduler` 和数据准备的 `run` 仍可直接导入。
 
-执行成功退出码为 0；参数错误为 2；计算或文件错误返回非零且保留错误信息，不自动跳过。`report serve` 持续运行，Ctrl+C 正常关闭服务器。帮助页列出参数；下表定义产物和写入范围。
+执行成功退出码为 0；参数错误为 2；计算或文件错误返回非零且保留错误信息，不自动跳过。帮助页列出参数；下表定义产物和写入范围。
 
 ## 1. 数据命令
 
@@ -28,16 +30,14 @@ python scripts/recap.py report evaluate --help
 | `--compute_returns` | 在各数据集 `meta/` 写入 `returns_<tag>.parquet` 和对应 JSON 合同、`episode_outcomes.json`、`z02_adaptation.json`；同步相关元数据 |
 | `--split_data` | 在配置的 `output_dir` 写入 `train.json`、`val.json`、`test.json`、`summary.json` 等划分信息 |
 | `--all` | 检查、生成回报、生成划分；视频深度检查需另加 `--verify-videos` |
-| `--import-zip ZIP` | 解压到配置的 `data_dir`，拒绝路径越界和覆盖已有文件；需要后续处理时搭配 `--all` |
 
 写入操作还会生成 `output_dir/adaptation_report.json`。原始 parquet 和视频不改写；适配过程会更新 `meta` 文件，变化的 JSON 按已有机制保留备份。无操作参数时显示帮助。
 
 **回报文件接口：** 每行由 `(episode_index, frame_index)` 标识，包含 `return`、`reward`、`prompt`。跨数据集关联时必须加上数据集标识。归一化尺度和结果覆盖以配置及 sidecar 合同为准。
 
 ```bash
-python scripts/recap.py data prepare --analyze
-python scripts/recap.py data prepare --all --verify-videos
-python scripts/recap.py data prepare --import-zip /absolute/new-data.zip --all
+python scripts/value_function.py data prepare --analyze
+python scripts/value_function.py data prepare --all --verify-videos
 ```
 
 ### `data survey`
@@ -47,7 +47,7 @@ python scripts/recap.py data prepare --import-zip /absolute/new-data.zip --all
 **输出：** `--output` 指定 JSON，默认 `artifacts/analysis/pairing_survey.json`，以及终端统计。只读源数据，不训练模型。结果包含样本清单、配对参数扫描和相关分析。
 
 ```bash
-python scripts/recap.py data survey --output artifacts/analysis/pairing_survey.json
+python scripts/value_function.py data survey --output artifacts/analysis/pairing_survey.json
 ```
 
 ## 2. 价值模型命令
@@ -73,9 +73,9 @@ python scripts/recap.py data survey --output artifacts/analysis/pairing_survey.j
 **checkpoint 接口：** format_version=2，architecture=`siglip_mean_patch_scalar`，包含模型参数、配置、优化器及训练状态等。冻结 SigLIP 权重通常不打包，重新从配置指定的模型目录加载。模型输入为相机图像字典或缓存特征，输出为 `[B, 1]` 的归一化价值，范围 `[-1, 0]`。
 
 ```bash
-python scripts/recap.py value train --prepare-cache
-python scripts/recap.py value train --smoke_test
-python scripts/recap.py value train --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples 64 --save_dir artifacts/smoke/custom
+python scripts/value_function.py value train --prepare-cache
+python scripts/value_function.py value train --smoke_test
+python scripts/value_function.py value train --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples 64 --save_dir artifacts/smoke/custom
 ```
 
 ### `value check-cache`
@@ -90,7 +90,7 @@ python scripts/recap.py value train --num_epochs 1 --max_steps 2 --val_steps 1 -
 
 - `loader`：测量原始数据读取，比较 worker 数量。
 - `head`：读取已建好的完整 train 缓存，测量回归头训练；需要 CUDA。
-- `gpu`：比较历史/当前视觉网络；还依赖 `recap_value/reference/train_value.py` 历史实现及相关权重，需要 CUDA。
+- `gpu`：比较历史/当前视觉网络；还依赖 `submodules/reference/train_value.py` 历史实现及相关权重，需要 CUDA。
 
 **输出：** `artifacts/performance/<mode>_benchmark.json` 及终端统计。会做临时模型更新以测吞吐，但不保存或修改正式 checkpoint；同模式结果文件会覆盖。
 
@@ -115,41 +115,41 @@ python scripts/recap.py value train --num_epochs 1 --max_steps 2 --val_steps 1 -
 | `storyboards/` | 各轨迹关键帧图片 |
 | `videos/` | 原始视频的符号链接；迁移报告时须保证链接目标可用 |
 
-可能创建或复用特征缓存。不会训练或修改 checkpoint。相同目录有协议一致性检查；重跑可能覆盖评估文件，新实验建议使用新目录。该命令**不自动生成 HTML 或浏览器预览视频**。
+可能创建或复用特征缓存。不会训练或修改 checkpoint。相同目录有协议一致性检查；重跑可能覆盖评估文件，新实验建议使用新目录。该命令**不生成 HTML**；图表和报告由 `report render` 生成。
 
-### 其余报告命令
+### `report render`
 
-| 命令 | 输入 | 输出 / 副作用 |
-|---|---|---|
-| `report check EVAL_DIR` | protocol、metrics、episodes、predictions、原 checkpoint 和完整 test 缓存 | `independent_replay.json`；CUDA 重放全部预测并核对目标、误差及权重；目前目标公式校验针对当前 −2000/4000 合同 |
-| `report videos EVAL_DIR --workers 4` | episodes.json、videos 下可访问的视频链接 | `previews/*.webm`、逐视频 JSON、`video_previews.json`；复用身份匹配的预览，不改源视频 |
-| `report render EVAL_DIR` | protocol、metrics、episodes、predictions；配套图片和视频供 HTML 引用 | `index.html`、`trajectories/*.html`、`plots/*.png`、`overview.png`、`all_trajectories.png`、`intervention_events.png`；覆盖派生图表 |
-| `report serve EVAL_DIR --port 0` | 已生成 index.html 的目录及其资源 | 在 127.0.0.1 启动服务，0 表示自动选择端口；写入 `preview-url.txt`，终端输出 URL |
+**输入：** `EVAL_DIR` 下的 protocol、metrics、episodes、predictions；配套图片和视频供 HTML 引用。
 
-建议顺序：`evaluate → check → videos → render → serve`。重新制作图表只需 `render`，不用再次运行模型。
+**输出：** `index.html`、`trajectories/*.html`、`plots/*.png`、`overview.png`、`all_trajectories.png`、`intervention_events.png`；覆盖派生图表。重新制作图表只需 `render`，不用再次运行模型。报告页面直接引用 `videos/` 下的原始视频符号链接，因此这些链接必须保持可用。
 
 ```bash
-python scripts/recap.py report evaluate --output artifacts/evaluation/new-run
-python scripts/recap.py report check artifacts/evaluation/new-run
-python scripts/recap.py report videos artifacts/evaluation/new-run --workers 4
-python scripts/recap.py report render artifacts/evaluation/new-run
-python scripts/recap.py report serve artifacts/evaluation/new-run --port 0
+python scripts/value_function.py report evaluate --output artifacts/evaluation/new-run
+python scripts/value_function.py report render artifacts/evaluation/new-run
 ```
 
 **绘图环境：** 已在 `value_function` 环境中验证 matplotlib 3.10.9。首次配置环境时安装可选绘图依赖；不再依赖系统 Python 的包：
 
 ```bash
 python -m pip install -r requirements-plotting.txt
-python scripts/recap.py report render artifacts/evaluation/new-run
+python scripts/value_function.py report render artifacts/evaluation/new-run
 ```
 
-入口按命令延迟导入模块，因此绘图和服务命令不会加载 PyTorch、模型或训练依赖。视频转换需要 PyAV，绘图需要 NumPy 和 matplotlib，其他核心流程继续使用 `value_function` 环境。
+入口按命令延迟导入模块，因此 `report` 命令不会加载训练工作流。matplotlib 只在 `report render` 调用 `configure_plots()` 时导入，`evaluate` 不导入绘图库。绘图需要 NumPy 和 matplotlib，其他核心流程继续使用 `value_function` 环境。
+
+## 环境注意事项：导入期崩溃
+
+本机 `value_function` 环境在导入 scipy（以及经由 scipy 的 transformers、matplotlib）时会偶发段错误或 `TypeError`，根因是多线程 BLAS/OpenMP 在导入期的竞争：`scipy/_lib/_docscrape.py` 解析 docstring 时崩溃。实测（每次 60–80 次独立进程）：`import scipy.special` 约 1/60、`from transformers import SiglipVisionModel` 约 2/80、`import matplotlib.pyplot` 约 12/60 失败；`import numpy`、`import torch`、`import cv2`、`import pyarrow` 均为 0/60。设置 `OPENBLAS_NUM_THREADS=1` 或 `OMP_NUM_THREADS=1` 后全部降到 0/80。
+
+`submodules/__init__.py` 因此在导入时把 `OMP_NUM_THREADS`、`MKL_NUM_THREADS`、`OPENBLAS_NUM_THREADS` 设为 `1`，位置在任何重依赖之前；入口和测试都最先导入该包。修复前完整测试 12 次中失败 3 次，修复后连续 39 次全部通过。`submodules/runtime.py` 的 `configure_runtime` 仍按配置设置 `torch.set_num_threads`，与上述设置互不冲突。
+
+三个工作流模块也会在导入 numpy/cv2/torch **之前** `import submodules`，因此直接运行 `python scripts/data_workflow.py ...` 与走入口一样稳定（实测各 40 次 0 失败，修复前约 1–2/40）。新增重型导入时，应放在 `import submodules` 之后。
 
 ## 旧入口迁移
 
-旧脚本已移入包内，不保留十个转发文件。历史实验报告中的命令作为溯源记录保留；重新执行时按下表替换，原参数保持可用。
+旧脚本已移入 `scripts/`，不保留十个转发文件。历史实验报告中的命令作为溯源记录保留；重新执行时按下表替换，原参数保持可用。
 
-| 旧脚本 | 新命令（前缀均为 `python scripts/recap.py`） |
+| 旧脚本 | 新命令（前缀均为 `python scripts/value_function.py`） |
 |---|---|
 | adapt_z02.py | `data prepare` |
 | survey_pairing.py | `data survey` |
@@ -157,20 +157,29 @@ python scripts/recap.py report render artifacts/evaluation/new-run
 | benchmark_value.py | `value benchmark` |
 | verify_feature_cache.py | `value check-cache` |
 | evaluate_value.py | `report evaluate` |
-| check_value_evaluation.py | `report check` |
 | render_value_evaluation.py | `report render` |
-| prepare_evaluation_videos.py | `report videos` |
-| serve_value_evaluation.py | `report serve` |
 
-后续优势评分和标签生成功能可在此入口增加子命令；本次只整理已有功能，不将尚未实现的优势标注描述为已完成。
+`check_value_evaluation.py`、`prepare_evaluation_videos.py` 和 `serve_value_evaluation.py` 的独立重放、视频转码和本地服务功能已删除；报告页面直接引用原始视频，用任意静态文件服务即可浏览。后续优势评分和标签生成功能可在此入口增加子命令；本次只整理已有功能，不将尚未实现的优势标注描述为已完成。
+
+## 目录整合
+
+2026-09-21 精简了目录布局，代码只保留 `scripts/` 和 `submodules/` 两处：
+
+| 原位置 | 现位置 |
+|---|---|
+| `recap_datasets/recap/contracts.py` | `submodules/contracts.py` |
+| `recap_datasets/recap/simple_dataset.py` | `submodules/datasets.py` |
+| `process/compute_returns.py` | 已删除；回报计算由 `data prepare --compute_returns` 完成 |
+
+`recap_datasets/` 其余文件（`value_dataset.py`、`common.py`、`utils.py`、`loader.py`）及 `config/recap_value_model_sft_z02.yaml`、`config/model/recap_value_model.yaml` 只被彼此引用，已一并删除。合并目标选在 `submodules/` 而不是平铺进 `scripts/`，是因为 `datasets` 与已安装的 `site-packages/datasets` 同名，平铺会造成导入歧义。核心模块的相对导入保持不变，功能未变。
 
 ## 本次整合验证（2026-09-21）
 
-- `python -m unittest discover -s tests -v`：22 项通过，包括旧训练/数据测试与新入口、错误传播、跨目录调用、视频 Range 请求测试。
+- `python -m unittest discover -s tests -v`：21 项通过，包括旧训练/数据测试与新入口路由、错误传播和跨目录调用。
+- 目录整合与导入稳定性修复后，完整测试连续 39 次全部通过（修复前 12 次中失败 3 次，原因见上文“环境注意事项”）；单模块、入口各路由和三个工作流直接调用也各自连续 25–60 次无失败。
 - `data prepare --analyze`：4 批真实数据只读检查通过。
-- `value train`：64 个训练样本、2 次真实更新、1 个验证批次，保存到 `artifacts/performance/cli-integration-smoke`。
-- `report check`：独立重放 34,759 帧，预测最大差异 0，原 checkpoint 未变化。
-- `report render`：重新生成 37 张逐轨迹图和 37 个轨迹页面；HTTP 首页、真实 WebM 的 206 字节范围响应及 Ctrl+C 退出检查通过。
+- `value train --smoke_test`：256 个真实训练样本、4 次优化器更新、2 个验证批次，cache/online 两条路径均通过有限梯度与参数更新检查。
+- `report render`：重新生成 37 张逐轨迹图和 37 个轨迹页面，报告首页可正常打开。
 - 评估验证输出位于 `artifacts/evaluation/cli-integration-smoke`；源评估输入复制或只读链接，原报告未覆盖。本次没有重新执行完整 `report evaluate` 推理或全量训练。
 
-> 2026-09-21 清理说明：上文记录的评估和冒烟产物及特征缓存已删除，验证记录保留。使用相关命令前须重新生成其输入产物。历史性能对照源码保留在 `recap_value/reference/`。
+> 2026-09-21 清理说明：上文记录的评估和冒烟产物及特征缓存已删除，验证记录保留。使用相关命令前须重新生成其输入产物。历史性能对照源码保留在 `submodules/reference/`。

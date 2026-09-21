@@ -10,7 +10,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset, Subset
 
-from recap_datasets.recap.contracts import resolve_path
+from submodules.contracts import resolve_path
 from .runtime import make_loader, autocast
 
 logger = logging.getLogger(__name__)

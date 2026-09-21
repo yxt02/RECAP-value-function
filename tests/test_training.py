@@ -3,10 +3,18 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import types
 import unittest
 from unittest.mock import patch
+
+# Imported before numpy/torch/transformers: submodules sets single-threaded BLAS, which
+# this environment needs for those imports not to crash. See docs/scripts.md.
+from submodules.cache import FeatureDataset, sha256, cache_identity, prepare_features
+from submodules.model import ValueModel
+from submodules.runtime import make_loader
+from submodules.feature_loader import DeviceFeatureLoader
 
 import numpy as np
 import torch
@@ -14,13 +22,13 @@ from torch import nn
 from torch.utils.data import TensorDataset
 from transformers import SiglipVisionConfig
 
-from recap_value.cache import FeatureDataset, sha256, cache_identity, prepare_features
-from recap_value.model import ValueModel
-from recap_value.runtime import make_loader
-from recap_value.feature_loader import DeviceFeatureLoader
-
 ROOT = Path(__file__).resolve().parents[1]
-from recap_value.workflows import training
+
+# The scripts/ directory holds the single workflow implementation.
+SCRIPTS_DIR = ROOT / 'scripts'
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+import training_workflow as training
 
 
 class FakeVision(nn.Module):
@@ -33,7 +41,7 @@ class FakeVision(nn.Module):
 class TrainingTests(unittest.TestCase):
     def model(self, freeze=True):
         with patch('transformers.SiglipVisionConfig.from_pretrained', return_value=SiglipVisionConfig(hidden_size=4)), \
-             patch('recap_value.model.SiglipVisionModel.from_pretrained', return_value=FakeVision()):
+             patch('submodules.model.SiglipVisionModel.from_pretrained', return_value=FakeVision()):
             return ValueModel('unused', ['cam2','cam3'], freeze, 'fp32', 8)
 
     def test_mean_pool_camera_order_and_frozen_eval(self):
@@ -153,9 +161,8 @@ class TrainingTests(unittest.TestCase):
                      patch.object(training,'cache_location',return_value=(root,'unused',{})), \
                      patch.object(training,'prepare_features',side_effect=lambda ds,*args:ds), \
                      patch.object(training,'ValueModel',Head), \
-                     patch('torch.cuda.is_available',return_value=False), \
-                     patch('sys.argv',['train','--config','unused']):
-                    training.main()
+                     patch('torch.cuda.is_available',return_value=False):
+                    training.main_train(['--config','unused'])
                 metrics=json.loads((root/name/'metrics.json').read_text())
                 self.assertEqual([m['global_step'] for m in metrics],expected)
                 self.assertTrue((root/name/'best_model.pt').exists())
@@ -179,7 +186,7 @@ class TrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'complete'
             model=Encoder()
-            with patch('recap_value.cache.cache_location',return_value=(path,'digest',{})):
+             with patch('submodules.cache.cache_location',return_value=(path,'digest',{})):
                 cached=prepare_features(Data(),model,cfg,'train',torch.device('cpu'))
                 self.assertEqual(model.calls,3)
                 torch.testing.assert_close(cached.features[:,0].float(),torch.arange(5).float())
@@ -187,7 +194,7 @@ class TrainingTests(unittest.TestCase):
                 prepare_features(Data(),model,cfg,'train',torch.device('cpu'))
                 self.assertEqual(model.calls,3)
             bad_path=Path(temporary)/'incomplete'
-            with patch('recap_value.cache.cache_location',return_value=(bad_path,'digest',{})), \
+             with patch('submodules.cache.cache_location',return_value=(bad_path,'digest',{})), \
                  patch.object(model,'encode',side_effect=RuntimeError('interrupted')):
                 with self.assertRaisesRegex(RuntimeError,'interrupted'):
                     prepare_features(Data(),model,cfg,'train',torch.device('cpu'))
@@ -216,11 +223,11 @@ class TrainingTests(unittest.TestCase):
             self.assertNotEqual(changed,cache_identity(Data(),cfg,'train')[0])
 
     def test_local_image_only_avoids_repeated_parquet_reads(self):
-        from recap_datasets.recap.simple_dataset import SimpleValueDataset
+         from submodules.datasets import SimpleValueDataset
         path=ROOT/'data/raw/2026.09.16_error'
         if not path.is_dir(): self.skipTest('local data absent')
         ds=SimpleValueDataset(path,episodes=[26],cameras=['cam2'],include_state=False,include_actions=False)
-        with patch('recap_datasets.recap.simple_dataset.pq.read_table',side_effect=AssertionError('parquet reread')):
+         with patch('submodules.datasets.pq.read_table',side_effect=AssertionError('parquet reread')):
             sample=ds[0]
         self.assertEqual(tuple(sample['images']['observation.images.cam2'].shape),(3,224,224))
         from transformers import SiglipImageProcessor

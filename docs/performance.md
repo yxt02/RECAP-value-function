@@ -72,7 +72,7 @@ GPU 探针使用 GPU 上的随机输入，预热 3 步、测量至少 12 步且�
 - 真实全量缓存完成并通过 SHA256/形状检查；训练集全部特征均有限。
 - 抽取 6 个位置（包括不同数据批次边界）共 96 帧，缓存等于对应在线特征的 FP16 表示。encoder 的均值特征输出实际是 FP32，FP16 存储最大绝对量化差异为 0.003845；这是特征量化误差，不是 value 误差。冻结模型的在线 forward 已统一 FP16 特征精度，在这些样本上在线/缓存预测差为 0，checkpoint 重载预测也一致。
 - 缓存路径与在线多 worker 路径均跑真实前向、反向及参数更新冒烟测试；日志在 `artifacts/performance/cached-smoke.log` 与 `online-smoke.log`。
-- 原用户训练脚本/配置快照保存在 `recap_value/reference/`；原始数据、旧 checkpoint、`nohup.out` 未作删除。
+- 原用户训练脚本/配置快照保存在 `submodules/reference/`；原始数据、旧 checkpoint、`nohup.out` 未作删除。
 
 
 > 2026-09-21：本文保留历史测量结论；所引用的日志、试跑结果及特征缓存已清理。性能对照源码保留，复测时需重新生成缓存。

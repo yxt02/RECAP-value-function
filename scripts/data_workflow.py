@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Audit and adapt z02 datasets. Raw parquet/video files are never rewritten."""
+"""Audit and adapt z02 datasets.
+
+Features:
+  - audit data integrity (indices, joints, timestamps, videos)
+  - compute return labels and episode outcomes
+  - generate train/val/test splits
+
+See docs/scripts.md for input/output contracts.
+"""
 import argparse
 from collections import Counter, defaultdict
 import hashlib
@@ -8,8 +16,13 @@ from pathlib import Path
 import random
 import shutil
 import sys
-import zipfile
-import stat
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+# Before numpy/cv2: submodules sets single-threaded BLAS, which this environment
+# needs for the heavy imports below not to crash. See docs/scripts.md.
+import submodules  # noqa: F401
 
 import cv2
 import numpy as np
@@ -17,18 +30,20 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from omegaconf import OmegaConf
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_ROOT))
-from recap_datasets.recap.contracts import episode_returns, resolve_outcome, resolve_path
+from submodules.contracts import episode_returns, resolve_outcome, resolve_path
 
-compute_returns_for_episode = episode_returns
+# Tunable parameters. Command line flags override these; relative paths resolve
+# against PROJECT_ROOT.
+DEFAULT_CONFIG = 'config/z02_data.yaml'
+
+# z02 joint layout: 7 left arm + left hand + 7 right arm + right hand + 4 body + 2 head.
 JOINT_NAMES = ([f'left_arm_{i}' for i in range(7)] + ['left_hand_binary'] +
                [f'right_arm_{i}' for i in range(7)] + ['right_hand_binary'] +
                [f'body_source_{i}' for i in range(4)] + ['head_source_18', 'head_source_19'])
 
 
 def save_json(path, value):
-    """Back up differing metadata once; use atomic replacement."""
+    """Back up differing metadata once, then write atomically."""
     path = Path(path)
     content = json.dumps(value, ensure_ascii=False, indent=2) + '\n'
     if path.exists():
@@ -43,27 +58,15 @@ def save_json(path, value):
     temp.replace(path)
 
 
-def import_archive(archive, data_dir):
-    archive = resolve_path(archive).resolve()
-    destination = resolve_path(data_dir).resolve()
-    with zipfile.ZipFile(archive) as z:
-        for item in z.infolist():
-            p = (destination / item.filename).resolve()
-            if not p.is_relative_to(destination) or stat.S_ISLNK(item.external_attr >> 16):
-                raise ValueError(f'Unsafe archive member: {item.filename}')
-            if p.exists() and not item.is_dir():
-                raise FileExistsError(f'Refusing to overwrite: {p}')
-        z.extractall(destination)
-    print(f'Imported {archive} into {destination}')
-
-
 def audit_dataset(cfg, spec, verify_videos=False):
+    """Check one dataset: indices, joints, timestamps, returns and videos."""
     root = resolve_path(cfg['data_dir']) / spec['name']
     files = sorted((root / 'data').rglob('episode_*.parquet'))
     if not files:
         raise FileNotFoundError(root)
     info = json.loads((root / 'meta/info.json').read_text())
-    tasks = {e['task_index']: e['task'].strip() for e in map(json.loads, (root / 'meta/tasks.jsonl').read_text().splitlines())}
+    tasks = {e['task_index']: e['task'].strip()
+             for e in map(json.loads, (root / 'meta/tasks.jsonl').read_text().splitlines())}
     episodes, tables, videos, schema_names = [], [], [], set()
     for p in files:
         table = pq.read_table(p)
@@ -127,6 +130,7 @@ def audit_dataset(cfg, spec, verify_videos=False):
 
 
 def write_dataset(cfg, spec, audited):
+    """Write the return sidecar, its contract and the adaptation metadata."""
     root, info, tasks, episodes, table, videos, schema = audited
     # Sidecars are versioned separately from the original rewards and z0 labels.
     out = root / 'meta' / f'returns_{cfg["tag"]}.parquet'
@@ -135,7 +139,8 @@ def write_dataset(cfg, spec, audited):
     temp.replace(out)
     contract = {k: cfg[k] for k in ('tag', 'gamma', 'failure_reward', 'return_scale', 'max_episode_steps')}
     contract.update(task=list(tasks.values()), normalization='raw_return / return_scale',
-                    outcome_override=spec.get('outcome_override'), outcome_source=spec.get('outcome_source', 'raw terminal reward'),
+                    outcome_override=spec.get('outcome_override'),
+                    outcome_source=spec.get('outcome_source', 'raw terminal reward'),
                     sidecar_sha256=hashlib.sha256(out.read_bytes()).hexdigest())
     save_json(out.with_suffix('.json'), contract)
     save_json(root / 'meta/episode_outcomes.json', {str(e['episode_index']): {
@@ -159,6 +164,7 @@ def write_dataset(cfg, spec, audited):
 
 
 def split_episodes(cfg, episodes):
+    """Stratify episodes by (dataset, outcome) into train/val/test, reusing existing splits."""
     output = resolve_path(cfg['output_dir'])
     eligible = {(e['dataset'], e['episode_index']): e for e in episodes if not e['excluded']}
     splits = {s: [] for s in ('train', 'val', 'test')}
@@ -187,17 +193,20 @@ def split_episodes(cfg, episodes):
     for s, entries in splits.items():
         entries.sort(key=lambda e: (e['dataset'], e['episode_index']))
         counts = dict(total_episodes=len(entries), total_frames=sum(e['total_frames'] for e in entries),
-                      success_episodes=sum(e['is_success'] for e in entries), failure_episodes=sum(not e['is_success'] for e in entries))
+                      success_episodes=sum(e['is_success'] for e in entries),
+                      failure_episodes=sum(not e['is_success'] for e in entries))
         save_json(output / f'{s}.json', dict(split_name=s, **counts, episodes=entries))
         summary[s] = counts
         p = output / 'lerobot' / f'{s}_episodes.txt'; p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(''.join(f'{e["dataset"]}/{e["episode_file"]}\n' for e in entries))
     save_json(output / 'summary.json', summary)
-    save_json(output / 'excluded.json', {'episodes': [e for e in episodes if e['excluded']], 'reason': 'Fewer than min_episode_steps; retained in raw storage'})
+    save_json(output / 'excluded.json', {'episodes': [e for e in episodes if e['excluded']],
+                                         'reason': 'Fewer than min_episode_steps; retained in raw storage'})
     return summary
 
 
 def run(config_path, write=False, split=False, verify_videos=False):
+    """Audit every configured dataset, optionally writing returns and splits."""
     cfg = OmegaConf.to_container(OmegaConf.load(resolve_path(config_path)), resolve=True)
     if abs(sum(cfg[k] for k in ('train_ratio', 'val_ratio', 'test_ratio')) - 1) > 1e-8:
         raise ValueError('Split ratios must sum to one')
@@ -216,35 +225,47 @@ def run(config_path, write=False, split=False, verify_videos=False):
         episodes.extend(eps)
         if write:
             write_dataset(cfg, spec, audited)
-        reports[spec['name']] = dict(episodes=len(eps), frames=sum(e['total_frames'] for e in eps),
+        reports[spec['name']] = dict(
+            episodes=len(eps), frames=sum(e['total_frames'] for e in eps),
             successes=sum(e['is_success'] for e in eps), failures=sum(not e['is_success'] for e in eps),
             raw_terminal_rewards=dict(Counter(str(e['raw_terminal_reward']) for e in eps)),
-            raw_joint_dim=spec['expected_joint_dim'], videos=len(videos), video_check='count/fps + first/middle/last decode' if verify_videos else 'existence')
+            raw_joint_dim=spec['expected_joint_dim'], videos=len(videos),
+            video_check='count/fps + first/middle/last decode' if verify_videos else 'existence')
         print(spec['name'], reports[spec['name']], flush=True)
     summary = split_episodes(cfg, episodes) if split else None
     if write or split:
-        save_json(resolve_path(cfg['output_dir']) / 'adaptation_report.json', dict(datasets=reports, splits=summary if summary is not None else (json.loads((resolve_path(cfg['output_dir']) / 'summary.json').read_text()) if (resolve_path(cfg['output_dir']) / 'summary.json').exists() else None), config=cfg))
+        output = resolve_path(cfg['output_dir'])
+        previous = output / 'summary.json'
+        save_json(output / 'adaptation_report.json', dict(
+            datasets=reports,
+            splits=summary if summary is not None else (
+                json.loads(previous.read_text()) if previous.exists() else None),
+            config=cfg))
     if summary:
         print(json.dumps(summary, indent=2))
     return reports
 
 
-def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--config', default='config/z02_data.yaml')
-    p.add_argument('--all', action='store_true')
-    p.add_argument('--analyze', action='store_true')
-    p.add_argument('--compute_returns', action='store_true')
-    p.add_argument('--split_data', action='store_true')
-    p.add_argument('--verify-videos', action='store_true')
-    p.add_argument('--import-zip', type=Path)
+def main_prepare(argv=None):
+    """CLI for `data prepare`: audit, compute returns and split the configured datasets."""
+    p = argparse.ArgumentParser(description='审计和适配 z02 数据集')
+    p.add_argument('--config', default=DEFAULT_CONFIG, help='数据配置文件路径')
+    p.add_argument('--all', action='store_true', help='执行所有操作（审计 + 回报 + 划分）')
+    p.add_argument('--analyze', action='store_true', help='只读检查数据完整性')
+    p.add_argument('--compute_returns', action='store_true', help='计算并写入回报标签')
+    p.add_argument('--split_data', action='store_true', help='生成训练/验证/测试集划分')
+    p.add_argument('--verify-videos', action='store_true', help='验证视频帧数、帧率和解码')
     args = p.parse_args(argv)
-    if args.import_zip:
-        cfg = OmegaConf.load(resolve_path(args.config)); import_archive(args.import_zip, cfg.data_dir)
     if any([args.all, args.analyze, args.compute_returns, args.split_data, args.verify_videos]):
         run(args.config, args.all or args.compute_returns, args.all or args.split_data, args.verify_videos)
     else:
         p.print_help()
+
+
+def main(argv=None):
+    """Route to the prepare subcommand."""
+    argv = sys.argv[1:] if argv is None else argv
+    main_prepare(argv)
 
 
 if __name__ == '__main__':

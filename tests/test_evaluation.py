@@ -1,6 +1,10 @@
 import unittest
+
+# Imported before numpy: submodules sets single-threaded BLAS, which this environment
+# needs for the heavy imports not to crash. See docs/scripts.md.
+from submodules.evaluation import regression,paired_episode_bootstrap,fit_baselines,apply_baselines,temporal_metrics
+
 import numpy as np
-from recap_value.evaluation import regression,paired_episode_bootstrap,fit_baselines,apply_baselines,temporal_metrics
 
 
 class EvaluationTests(unittest.TestCase):

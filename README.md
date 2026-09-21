@@ -6,26 +6,39 @@
 
 ## 功能与统一入口
 
-所有操作通过 `python scripts/recap.py <组> <命令>` 执行，原来的 10 个独立脚本已合并为一个入口。实现保留在 `recap_value/workflows/`，各命令按需加载依赖。
+所有操作通过 `python scripts/value_function.py <组> <命令>` 执行，原来的 10 个独立脚本已合并为这一个入口，各命令按需加载依赖。
+
+目录结构只保留两个代码位置：
+
+| 目录 | 内容 |
+|---|---|
+| `scripts/` | 命令行入口 `value_function.py` 和三个工作流 `data_workflow.py`、`training_workflow.py`、`evaluation_workflow.py` |
+| `submodules/` | 被工作流复用的核心模块：模型、缓存、评估统计、特征加载、数据加载与共享合同 |
+
+数据集加载与处理脚本（回报计算）已并入上述两处：共享合同在 `submodules/contracts.py`，数据加载在 `submodules/datasets.py`，回报计算在 `data_workflow.py`。`tests/` 保持独立。
 
 | 命令组 | 子命令 | 主要输入 → 输出 |
 |---|---|---|
-| `data` | `prepare`、`survey` | 原始数据与适配配置 → 回报标签、轨迹划分、配对分析 |
+| `data` | `prepare` | 原始数据与适配配置 → 回报标签、轨迹划分 |
 | `value` | `train`、`check-cache`、`benchmark` | 训练配置、数据、视觉权重 → 特征缓存、checkpoint、验证或性能记录 |
-| `report` | `evaluate`、`check`、`videos`、`render`、`serve` | checkpoint 或已有评估结果 → 预测数组、指标、图表、视频预览、HTML 报告 |
+| `report` | `evaluate`、`render` | checkpoint 或已有评估结果 → 预测数组、指标、图表、HTML 报告 |
 
 完整参数、输入输出字段、写入范围、环境要求和旧命令迁移表见 **[脚本接口文档](docs/scripts.md)**。相对文件路径均按工程根目录解析；从其他目录调用时，使用入口的绝对路径。
 
 ```bash
-python scripts/recap.py --help
-python scripts/recap.py data --help
-python scripts/recap.py value train --help
-python scripts/recap.py report evaluate --help
+python scripts/value_function.py --help
+python scripts/value_function.py data --help
+python scripts/value_function.py value train --help
+python scripts/value_function.py report evaluate --help
 ```
 
 已完成：数据适配、回报计算、价值训练、独立测试、时序诊断和逐轨迹可视化。
 
 待实现：正式的 advantage/disadvantage 标签导出及其阈值对比界面。目前的时序诊断不等于已完成优势条件策略训练；π 策略训练与动作生成不在当前实现中。
+
+## 下一阶段需求
+
+剩余的优势评分、advantage/disadvantage 标签和轨迹对比功能，见 [需求与实施方案](docs/remaining_requirements.md)。文档明确已有能力、待实现接口、计算规则、实施顺序和验收标准；拟定命令尚未实现。
 
 ## 本机运行
 
@@ -34,10 +47,10 @@ python scripts/recap.py report evaluate --help
 ```bash
 cd /home/zoyi/my_work/RECAP-value-function-main
 conda activate value_function
-python scripts/recap.py data prepare --analyze
-python scripts/recap.py value train --smoke_test
+python scripts/value_function.py data prepare --analyze
+python scripts/value_function.py value train --smoke_test
 # 正式训练（会写入配置指定的保存目录）
-python scripts/recap.py value train
+python scripts/value_function.py value train
 ```
 
 需要生成图表时，在同一环境安装可选绘图依赖：
@@ -46,14 +59,14 @@ python scripts/recap.py value train
 python -m pip install -r requirements-plotting.txt
 ```
 
-本仓库复用已有训练环境；`requirements-plotting.txt` 仅列出绘图依赖，不是完整训练环境的安装清单。原始视频预览转换另需 PyAV。
+本仓库复用已有训练环境；`requirements-plotting.txt` 仅列出绘图依赖，不是完整训练环境的安装清单。
 
-实际训练配置为 **`config/train_value.yaml`**。`config/recap_value_model_sft_z02.yaml` 和 `config/model/recap_value_model.yaml` 是另一套接口的配置，修改它们不会改变此训练入口。
+实际训练配置为 **`config/train_value.yaml`**；数据适配配置为 `config/z02_data.yaml`。这两份是仓库中唯一的配置。
 
 默认首次运行会完整缓存 train/val 的冻结视觉特征，然后训练回归头。后续运行校验缓存后直接训练。可提前生成缓存：
 
 ```bash
-python scripts/recap.py value train --prepare-cache
+python scripts/value_function.py value train --prepare-cache
 ```
 
 缓存位于 `data/cache/value_features_v1/`，目录名包含内容指纹；单 camera 的完整 train/val 特征约 0.60 GiB。特征以 FP16 存储；冻结模型的在线图片推理也应用相同的特征精度，保持与缓存训练路径一致。指纹覆盖模型权重、processor、预处理、相机顺序、数据文件时间/大小、frame 顺序、return 标签和计算精度。缓存文件带 SHA256 校验，生成完成前不会被训练读取。修改 return 后必须重新适配以更新 sidecar 合同。当前没有随机图像增强，且 encoder 冻结，才能跨 epoch 复用这些特征。
@@ -61,7 +74,7 @@ python scripts/recap.py value train --prepare-cache
 默认把小体积的特征放进显存，GPU 内存紧张时退回 CPU。无需为已缓存特征设置大量 worker；多 worker 用于首次视频解码。若关闭缓存，仍可走原始图像训练：
 
 ```bash
-python scripts/recap.py value train --no-cache --smoke_test
+python scripts/value_function.py value train --no-cache --smoke_test
 ```
 
 ## 训练预算
@@ -91,19 +104,19 @@ python scripts/recap.py value train --no-cache --smoke_test
 新增或修改原始数据后运行：
 
 ```bash
-python scripts/recap.py data prepare --config config/z02_data.yaml --all
+python scripts/value_function.py data prepare --config config/z02_data.yaml --all
 ```
 
 ## 验证与性能复测
 
 ```bash
 python -m unittest discover -s tests -v
-python scripts/recap.py value benchmark --mode loader
-python scripts/recap.py value benchmark --mode head  # 需要已完成的全量 train 缓存
-python scripts/recap.py value check-cache         # 比较缓存与在线编码，并检查已有 checkpoint
+python scripts/value_function.py value benchmark --mode loader
+python scripts/value_function.py value benchmark --mode head  # 需要已完成的全量 train 缓存
+python scripts/value_function.py value check-cache         # 比较缓存与在线编码，并检查已有 checkpoint
 ```
 
-`--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `recap_value/reference/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
+`--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `submodules/reference/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
 
 ## 当前 checkpoint 独立测试
 
@@ -111,28 +124,24 @@ python scripts/recap.py value check-cache         # 比较缓存与在线编码�
 
 ## 生成与浏览评估报告
 
-以下示例使用一个新的评估目录。`evaluate` 会评估完整测试集，`check` 会重放预测；仅重新绘图时直接运行 `render`，无需重新推理。
+以下示例使用一个新的评估目录。`evaluate` 会评估完整测试集并写入预测数组；仅重新绘图时直接运行 `render`，无需重新推理。
 
 ```bash
-python scripts/recap.py report evaluate --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
-python scripts/recap.py report check artifacts/evaluation/my-run
-python scripts/recap.py report videos artifacts/evaluation/my-run --workers 4
-python scripts/recap.py report render artifacts/evaluation/my-run
-python scripts/recap.py report serve artifacts/evaluation/my-run --port 0
+python scripts/value_function.py report evaluate --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
+python scripts/value_function.py report render artifacts/evaluation/my-run
 ```
 
-评估目录中的 `predictions.npz` 保存逐帧数组，`episodes.json` 保存轨迹及其数组区间，`metrics.json` 保存统计，`protocol.json` 保存评估约定。报告入口为 `index.html`；服务命令输出本地 URL，Ctrl+C 退出。视频目录可能包含指向本机原始视频的符号链接，移动报告时须检查链接目标。
+评估目录中的 `predictions.npz` 保存逐帧数组，`episodes.json` 保存轨迹及其数组区间，`metrics.json` 保存统计，`protocol.json` 保存评估约定。报告入口为 `index.html`，用任意静态文件服务打开即可。
 
-评估和重放目前使用原 CUDA/BF16 环境；绘图、视频转换和浏览不需要加载模型。命令可能覆盖目标目录中的同名派生产物，独立实验应使用新的输出目录。
+评估目前使用原 CUDA/BF16 环境；绘图不需要加载模型。命令可能覆盖目标目录中的同名派生产物，独立实验应使用新的输出目录。
 
 ## 本次入口整合验证
 
 2026-09-21 的验证结果：
 
-- 22 项测试通过，覆盖已有训练与数据逻辑、新入口路由、错误传播、跨目录调用和视频字节范围请求。
+- 21 项测试通过，覆盖已有训练与数据逻辑、新入口路由、错误传播和跨目录调用。
 - 4 批真实数据只读检查通过；64 个训练样本完成 2 次真实更新及一次验证批次，并保存独立冒烟 checkpoint。
-- 重放全部 34,759 帧，预测与原评估逐元素一致，原正式 checkpoint 未变化。
-- 重新生成 37 条轨迹的图表和 HTML，并验证报告首页、视频拖动接口及服务正常退出。
+- 重新生成 37 条轨迹的图表和 HTML，并验证报告首页可正常打开。
 
 本次验证没有重新执行全量训练或完整 `report evaluate`。冒烟结果分别放在 `artifacts/performance/cli-integration-smoke/` 和 `artifacts/evaluation/cli-integration-smoke/`，均不纳入版本控制。
 
