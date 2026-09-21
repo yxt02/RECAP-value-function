@@ -186,7 +186,7 @@ class TrainingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'complete'
             model=Encoder()
-             with patch('submodules.cache.cache_location',return_value=(path,'digest',{})):
+            with patch('submodules.cache.cache_location',return_value=(path,'digest',{})):
                 cached=prepare_features(Data(),model,cfg,'train',torch.device('cpu'))
                 self.assertEqual(model.calls,3)
                 torch.testing.assert_close(cached.features[:,0].float(),torch.arange(5).float())
@@ -194,7 +194,7 @@ class TrainingTests(unittest.TestCase):
                 prepare_features(Data(),model,cfg,'train',torch.device('cpu'))
                 self.assertEqual(model.calls,3)
             bad_path=Path(temporary)/'incomplete'
-             with patch('submodules.cache.cache_location',return_value=(bad_path,'digest',{})), \
+            with patch('submodules.cache.cache_location',return_value=(bad_path,'digest',{})), \
                  patch.object(model,'encode',side_effect=RuntimeError('interrupted')):
                 with self.assertRaisesRegex(RuntimeError,'interrupted'):
                     prepare_features(Data(),model,cfg,'train',torch.device('cpu'))
@@ -223,11 +223,11 @@ class TrainingTests(unittest.TestCase):
             self.assertNotEqual(changed,cache_identity(Data(),cfg,'train')[0])
 
     def test_local_image_only_avoids_repeated_parquet_reads(self):
-         from submodules.datasets import SimpleValueDataset
+        from submodules.datasets import SimpleValueDataset
         path=ROOT/'data/raw/2026.09.16_error'
         if not path.is_dir(): self.skipTest('local data absent')
         ds=SimpleValueDataset(path,episodes=[26],cameras=['cam2'],include_state=False,include_actions=False)
-         with patch('submodules.datasets.pq.read_table',side_effect=AssertionError('parquet reread')):
+        with patch('submodules.datasets.pq.read_table',side_effect=AssertionError('parquet reread')):
             sample=ds[0]
         self.assertEqual(tuple(sample['images']['observation.images.cam2'].shape),(3,224,224))
         from transformers import SiglipImageProcessor
