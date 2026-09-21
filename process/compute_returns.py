@@ -352,7 +352,7 @@ def process_dataset(
 def compute_returns(cfg: DictConfig) -> None:
     """Main entry point for return computation."""
     if cfg.get('adaptation_config'):
-        from scripts.adapt_z02 import run
+        from recap_value.workflows.data import run
         run(cfg.adaptation_config, write=True)
         return
     logging.basicConfig(level=logging.INFO)

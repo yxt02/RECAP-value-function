@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 """Verify real cache/online agreement and checkpoint reload on bounded real frames."""
 import json
+import argparse
 from pathlib import Path
 import sys
 import torch
 
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
 from recap_value.cache import FeatureDataset,cache_location
 from recap_value.runtime import load_config,configure_runtime,raw_dataset,make_loader,autocast
 from recap_value.model import ValueModel
 
 
-def main():
-    cfg=load_config('config/train_value.yaml');configure_runtime(cfg)
+def main(argv=None):
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', default='config/train_value.yaml')
+    parser.add_argument('--output', default='artifacts/performance/cache-verification.json')
+    args=parser.parse_args(argv)
+    cfg=load_config(args.config);configure_runtime(cfg)
     ds=raw_dataset(cfg,'train')
     path,digest,_=cache_location(ds,cfg,'train')
     cached=FeatureDataset(path,digest)
@@ -60,7 +65,9 @@ def main():
             'max_feature_abs_error':maximum,'max_online_vs_cached_prediction_abs_error':prediction_error,
             'encoder_output_dtypes':sorted(output_dtypes),'cache':str(path)}
     report['checkpoint_reload']='passed' if head is not None else 'not tested'
-    (ROOT/'artifacts/performance/cache-verification.json').write_text(json.dumps(report,indent=2)+'\n')
+    output=ROOT/args.output
+    output.parent.mkdir(parents=True,exist_ok=True)
+    output.write_text(json.dumps(report,indent=2)+'\n')
     print(json.dumps(report,indent=2))
 
 

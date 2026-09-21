@@ -56,7 +56,7 @@ def episode_returns(length, success, gamma, failure_reward):
 def load_normalization(dataset_path, tag):
     path = Path(dataset_path) / 'meta' / f'returns_{tag}.json'
     if not path.exists():
-        raise FileNotFoundError(f'Missing shared return contract: {path}; run scripts/adapt_z02.py --all')
+        raise FileNotFoundError(f'Missing shared return contract: {path}; run scripts/recap.py data prepare --all')
     contract = json.loads(path.read_text())
     if contract['tag'] != tag or contract['return_scale'] <= 0:
         raise ValueError(f'Invalid return contract: {path}')

@@ -20,8 +20,7 @@ from recap_value.runtime import make_loader
 from recap_value.feature_loader import DeviceFeatureLoader
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('training', ROOT/'scripts/train_value.py')
-training = importlib.util.module_from_spec(spec); spec.loader.exec_module(training)
+from recap_value.workflows import training
 
 
 class FakeVision(nn.Module):

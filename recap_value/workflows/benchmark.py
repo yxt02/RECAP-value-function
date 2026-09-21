@@ -10,7 +10,7 @@ import sys
 import time
 import torch
 
-ROOT=Path(__file__).resolve().parents[1]
+ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
 from recap_value.model import ValueModel
 from recap_value.runtime import load_config,configure_runtime,raw_dataset,make_loader,autocast,move_batch
@@ -38,10 +38,10 @@ def timed_gpu(model,config,batch_size,steps=12):
             'peak_reserved_gib':torch.cuda.max_memory_reserved()/2**30}
 
 
-def main():
-    p=argparse.ArgumentParser();p.add_argument('--mode',choices=['gpu','loader','head'],required=True)
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--mode',choices=['gpu','loader','head'],required=True)
     p.add_argument('--config',default='config/train_value.yaml')
-    args=p.parse_args();cfg=load_config(args.config);configure_runtime(cfg)
+    args=p.parse_args(argv);cfg=load_config(args.config);configure_runtime(cfg)
     output=ROOT/'artifacts/performance';output.mkdir(parents=True,exist_ok=True)
     results=[]
     if args.mode=='gpu':
@@ -76,7 +76,7 @@ def main():
             del iterator,loader;gc.collect()
     else:
         from recap_value.cache import cache_location, FeatureDataset
-        from scripts.train_value import epoch, build_scheduler
+        from recap_value.workflows.training import epoch, build_scheduler
         ds=raw_dataset(cfg,'train')
         path,digest,_=cache_location(ds,cfg,'train')
         ds=FeatureDataset(path,digest)

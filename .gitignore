@@ -8,3 +8,7 @@ dist/
 build/
 .DS_Store
 checkpoints/
+
+# Generated CLI integration smoke outputs (reproducible, not source).
+artifacts/evaluation/cli-integration-smoke/
+artifacts/performance/cli-integration-smoke/

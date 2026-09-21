@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 import torch
 from PIL import Image,ImageDraw,ImageFont
 
-ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
+ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT))
 from recap_datasets.recap.contracts import resolve_path
 from recap_value.cache import cache_location,prepare_features,FeatureDataset,sha256
 from recap_value.model import ValueModel
@@ -47,11 +47,11 @@ def split_metadata(data,split):
     return episodes,np.concatenate(targets)
 
 
-def main():
+def main(argv=None):
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--checkpoint',default='checkpoints/optimized/best_model.pt')
     parser.add_argument('--output')
-    args=parser.parse_args()
+    args=parser.parse_args(argv)
     checkpoint=resolve_path(args.checkpoint); checkpoint_hash=sha256(checkpoint)
     output=resolve_path(args.output or f'artifacts/evaluation/checkpoint-{checkpoint_hash[:12]}-test')
     output.mkdir(parents=True,exist_ok=True)

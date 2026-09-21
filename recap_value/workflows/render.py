@@ -30,9 +30,9 @@ def shade(ax,t,flags):
     for a,b in zip(starts,ends):ax.axvspan(t[a],t[b],color='#a094b8',alpha=.13,lw=0)
 
 
-def main():
-    parser=argparse.ArgumentParser();parser.add_argument('output');args=parser.parse_args()
-    root=Path(args.output).resolve();eps=json.loads((root/'episodes.json').read_text());m=json.loads((root/'metrics.json').read_text())
+def main(argv=None):
+    parser=argparse.ArgumentParser(description=__doc__);parser.add_argument('output');args=parser.parse_args(argv)
+    root=(Path(__file__).resolve().parents[2]/args.output).resolve();eps=json.loads((root/'episodes.json').read_text());m=json.loads((root/'metrics.json').read_text())
     protocol=json.loads((root/'protocol.json').read_text()); data=np.load(root/'predictions.npz')
     y=data['target'];p=data['prediction'];t=data['timestamp'];flags=data['intervention'];base=data['dataset_frame_linear']
     (root/'plots').mkdir(exist_ok=True);(root/'trajectories').mkdir(exist_ok=True)

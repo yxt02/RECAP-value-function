@@ -31,7 +31,7 @@ from pathlib import Path
 import numpy as np
 import pyarrow.parquet as pq
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 ARM = list(range(8, 15))        # right arm, 7 DOF; always live in every session
 HAND = 15                       # right hand binary; live in 3 of 4 sessions
 TAIL = 60                       # frames excluded near the terminal (outcome visible)
@@ -70,10 +70,10 @@ def inventory():
     return rows
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', default='artifacts/analysis/pairing_survey.json')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     rows = inventory()
     sessions = sorted({r['dataset'] for r in rows})
@@ -292,7 +292,7 @@ def main():
                                    stride=STRIDE, tail_frames=TAIL,
                                    bootstrap=BOOTSTRAP, seed=SEED),
                               indent=2) + '\n')
-    print(f'\nWrote {out.relative_to(ROOT)}')
+    print(f'\nWrote {out}')
 
 
 if __name__ == '__main__':

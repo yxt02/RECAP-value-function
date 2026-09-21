@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Independent replay of every stored prediction; check frame targets and frozen checkpoint."""
 from pathlib import Path
-import sys,json
+import sys,json,argparse
 import numpy as np
 import torch
-ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
+ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT))
 from recap_value.cache import FeatureDataset,sha256
 from recap_value.model import ValueModel
 from recap_value.runtime import configure_runtime,autocast
 
 
-def main():
-    root=Path(sys.argv[1]).resolve()
+def main(argv=None):
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('directory', help='Evaluation directory containing protocol, metrics, episodes and predictions')
+    args=parser.parse_args(argv)
+    root=(Path(__file__).resolve().parents[2]/args.directory).resolve()
     protocol=json.loads((root/'protocol.json').read_text());metrics=json.loads((root/'metrics.json').read_text())
     checkpoint=Path(protocol['checkpoint']);assert sha256(checkpoint)==protocol['checkpoint_sha256']
     payload=torch.load(checkpoint,map_location='cpu',weights_only=False);cfg=payload['config'];configure_runtime(cfg)

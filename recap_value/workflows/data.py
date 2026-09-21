@@ -17,7 +17,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from omegaconf import OmegaConf
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 from recap_datasets.recap.contracts import episode_returns, resolve_outcome, resolve_path
 
@@ -44,7 +44,7 @@ def save_json(path, value):
 
 
 def import_archive(archive, data_dir):
-    archive = Path(archive).resolve()
+    archive = resolve_path(archive).resolve()
     destination = resolve_path(data_dir).resolve()
     with zipfile.ZipFile(archive) as z:
         for item in z.infolist():
@@ -229,7 +229,7 @@ def run(config_path, write=False, split=False, verify_videos=False):
     return reports
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config', default='config/z02_data.yaml')
     p.add_argument('--all', action='store_true')
@@ -238,7 +238,7 @@ def main():
     p.add_argument('--split_data', action='store_true')
     p.add_argument('--verify-videos', action='store_true')
     p.add_argument('--import-zip', type=Path)
-    args = p.parse_args()
+    args = p.parse_args(argv)
     if args.import_zip:
         cfg = OmegaConf.load(resolve_path(args.config)); import_archive(args.import_zip, cfg.data_dir)
     if any([args.all, args.analyze, args.compute_returns, args.split_data, args.verify_videos]):

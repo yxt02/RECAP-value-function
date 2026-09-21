@@ -14,7 +14,7 @@ import time
 import torch
 from torch import nn
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 from recap_datasets.recap.contracts import resolve_path
 from recap_value.model import ValueModel
@@ -69,7 +69,7 @@ def build_scheduler(optimizer, total_steps, warmup_steps):
     return torch.optim.lr_scheduler.LambdaLR(optimizer, multiplier)
 
 
-def main():
+def main(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--config', default='config/train_value.yaml')
     p.add_argument('--smoke_test', action='store_true')
@@ -79,7 +79,7 @@ def main():
                      ('max_total_steps',int),('early_stopping_patience',int),('max_samples',int),('max_steps',int),('val_steps',int),('num_workers',int),('cache_batch_size',int),
                      ('cached_batch_size',int),('save_dir',str)]:
         p.add_argument('--'+key, type=typ)
-    args = p.parse_args()
+    args = p.parse_args(argv)
     config = load_config(args.config)
     for key,value in vars(args).items():
         if key not in ('config','smoke_test','prepare_cache','no_cache') and value is not None:

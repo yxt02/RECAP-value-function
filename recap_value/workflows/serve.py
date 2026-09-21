@@ -40,14 +40,19 @@ class Handler(SimpleHTTPRequestHandler):
         except (BrokenPipeError,ConnectionResetError):pass
 
 
-def main():
-    p=argparse.ArgumentParser();p.add_argument('directory');p.add_argument('--port',type=int,default=0)
-    args=p.parse_args();root=Path(args.directory).resolve()
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('directory');p.add_argument('--port',type=int,default=0)
+    args=p.parse_args(argv);root=(Path(__file__).resolve().parents[2]/args.directory).resolve()
     if not (root/'index.html').is_file():raise FileNotFoundError('Render the report first')
     server=ThreadingHTTPServer(('127.0.0.1',args.port),partial(Handler,directory=str(root)))
     url=f'http://127.0.0.1:{server.server_port}/index.html'
     (root/'preview-url.txt').write_text(url+'\n');print(url,flush=True)
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        server.server_close()
 
 
 if __name__=='__main__':main()

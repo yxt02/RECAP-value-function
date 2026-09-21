@@ -37,9 +37,9 @@ def convert(root,ep):
     return dict(slug=ep['slug'],frames=count,seconds=result['seconds'])
 
 
-def main():
-    p=argparse.ArgumentParser();p.add_argument('directory');p.add_argument('--workers',type=int,default=4);args=p.parse_args()
-    root=Path(args.directory).resolve();(root/'previews').mkdir(exist_ok=True)
+def main(argv=None):
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('directory');p.add_argument('--workers',type=int,default=4);args=p.parse_args(argv)
+    root=(Path(__file__).resolve().parents[2]/args.directory).resolve();(root/'previews').mkdir(exist_ok=True)
     eps=json.loads((root/'episodes.json').read_text());results=[]
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for f in as_completed([pool.submit(convert,root,e) for e in eps]):

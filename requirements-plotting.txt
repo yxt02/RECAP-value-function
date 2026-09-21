@@ -1,0 +1,2 @@
+# Optional report plotting dependencies; tested in conda value_function.
+matplotlib==3.10.9
