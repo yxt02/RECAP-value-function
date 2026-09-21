@@ -4,25 +4,50 @@
 
 当前模型冻结 SigLIP2，对各相机的图像分块特征取平均，再训练标量回归网络，输出范围为 `[-1, 0]`。它是视觉价值基线，尚不是带语言条件和 201 档价值分布的完整 RECAP critic。
 
-## 功能与独立脚本
+## 目录结构
 
-所有操作通过独立脚本执行，每个脚本功能单一，互不重叠：
+```
+scripts/              # 入口脚本（数据预处理 + 训练）
+├── prepare_data.py   # 数据审计、回报、划分
+└── train.py          # 模型训练
 
-### scripts/ — 数据预处理与训练
+tests/                # 单元测试
+├── test_cli.py
+├── test_evaluation.py
+└── test_training.py
+
+submodules/           # 核心模块 + 工具 + 工作流
+├── cache.py          # 特征缓存
+├── contracts.py      # 数据合同
+├── datasets.py       # 数据集加载
+├── evaluation.py     # 评估统计
+├── feature_loader.py # 特征加载
+├── model.py          # 模型定义
+├── runtime.py        # 运行时配置
+├── data_workflow.py          # 数据工作流实现
+├── training_workflow.py      # 训练工作流实现
+├── evaluation_workflow.py    # 评估工作流实现
+├── benchmark.py              # 性能测试
+├── check_cache.py            # 缓存检查
+├── evaluate.py               # 评估入口
+└── render.py                 # 报告渲染
+```
+
+### 入口脚本
 
 | 脚本 | 功能 |
 |---|---|
 | `scripts/prepare_data.py` | 数据审计、回报计算、轨迹划分 |
 | `scripts/train.py` | 模型训练 |
 
-### tests/ — 测试与评估
+### 工具脚本（位于 submodules/）
 
 | 脚本 | 功能 |
 |---|---|
-| `tests/benchmark.py` | GPU/加载器/缓存头性能测试 |
-| `tests/check_cache.py` | 缓存一致性验证 |
-| `tests/evaluate.py` | 全测试集评估 |
-| `tests/render.py` | 图表和 HTML 报告渲染 |
+| `submodules/benchmark.py` | GPU/加载器/缓存头性能测试 |
+| `submodules/check_cache.py` | 缓存一致性验证 |
+| `submodules/evaluate.py` | 全测试集评估 |
+| `submodules/render.py` | 图表和 HTML 报告渲染 |
 
 ### 一键流程
 
@@ -31,23 +56,15 @@
 | `run_train.sh` | 数据准备 + 训练 |
 | `run_test.sh` | 缓存检查 + 评估 + 报告 |
 
-目录结构：
-
-| 目录 | 内容 |
-|---|---|
-| `scripts/` | 数据预处理、适配、训练脚本和工作流 |
-| `tests/` | 测试、评估、报告脚本和单元测试 |
-| `submodules/` | 被工作流复用的核心模块：模型、缓存、评估统计、特征加载、数据加载与共享合同 |
-
 完整参数、输入输出字段、写入范围、环境要求见 **[脚本接口文档](docs/scripts.md)**。相对文件路径均按工程根目录解析；从其他目录调用时，使用入口的绝对路径。
 
 ```bash
 python scripts/prepare_data.py --help
 python scripts/train.py --help
-python tests/benchmark.py --help
-python tests/check_cache.py --help
-python tests/evaluate.py --help
-python tests/render.py --help
+python submodules/benchmark.py --help
+python submodules/check_cache.py --help
+python submodules/evaluate.py --help
+python submodules/render.py --help
 ```
 
 已完成：数据适配、回报计算、价值训练、独立测试、时序诊断和逐轨迹可视化。
@@ -140,9 +157,9 @@ python scripts/prepare_data.py --config config/z02_data.yaml --all
 
 ```bash
 python -m unittest discover -s tests -v
-python tests/benchmark.py --mode loader
-python tests/benchmark.py --mode head  # 需要已完成的全量 train 缓存
-python tests/check_cache.py           # 比较缓存与在线编码，并检查已有 checkpoint
+python submodules/benchmark.py --mode loader
+python submodules/benchmark.py --mode head  # 需要已完成的全量 train 缓存
+python submodules/check_cache.py           # 比较缓存与在线编码，并检查已有 checkpoint
 ```
 
 `--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `submodules/reference/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
@@ -156,8 +173,8 @@ python tests/check_cache.py           # 比较缓存与在线编码，并检查�
 以下示例使用一个新的评估目录。`evaluate` 会评估完整测试集并写入预测数组；仅重新绘图时直接运行 `render`，无需重新推理。
 
 ```bash
-python tests/evaluate.py --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
-python tests/render.py artifacts/evaluation/my-run
+python submodules/evaluate.py --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
+python submodules/render.py artifacts/evaluation/my-run
 ```
 
 评估目录中的 `predictions.npz` 保存逐帧数组，`episodes.json` 保存轨迹及其数组区间，`metrics.json` 保存统计，`protocol.json` 保存评估约定。报告入口为 `index.html`，用任意静态文件服务打开即可。

@@ -28,7 +28,7 @@ from submodules.contracts import resolve_path
 from submodules.cache import FeatureDataset, cache_location
 from submodules.model import ValueModel
 from submodules.runtime import autocast, configure_runtime, load_config, make_loader, raw_dataset
-from scripts.training_workflow import benchmark_gpu, benchmark_loader, benchmark_head, build_scheduler, epoch, BENCHMARK_DIR
+from submodules.training_workflow import benchmark_gpu, benchmark_loader, benchmark_head, build_scheduler, epoch, BENCHMARK_DIR
 
 DEFAULT_CONFIG = 'config/train_value.yaml'
 

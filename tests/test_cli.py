@@ -10,10 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = {
     'prepare_data.py': 'scripts',
     'train.py': 'scripts',
-    'benchmark.py': 'tests',
-    'check_cache.py': 'tests',
-    'evaluate.py': 'tests',
-    'render.py': 'tests',
+    'benchmark.py': 'submodules',
+    'check_cache.py': 'submodules',
+    'evaluate.py': 'submodules',
+    'render.py': 'submodules',
 }
 
 
@@ -38,7 +38,7 @@ class ScriptTests(unittest.TestCase):
     def test_benchmark_requires_mode(self):
         """benchmark.py should fail without --mode."""
         result = subprocess.run(
-            [sys.executable, str(ROOT / 'tests' / 'benchmark.py')],
+            [sys.executable, str(ROOT / 'submodules' / 'benchmark.py')],
             cwd=str(ROOT),
             text=True,
             capture_output=True
@@ -48,7 +48,7 @@ class ScriptTests(unittest.TestCase):
     def test_render_requires_output(self):
         """render.py should fail without output argument."""
         result = subprocess.run(
-            [sys.executable, str(ROOT / 'tests' / 'render.py')],
+            [sys.executable, str(ROOT / 'submodules' / 'render.py')],
             cwd=str(ROOT),
             text=True,
             capture_output=True

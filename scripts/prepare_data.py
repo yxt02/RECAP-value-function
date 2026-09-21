@@ -18,7 +18,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Before numpy/cv2: submodules sets single-threaded BLAS
 import submodules  # noqa: F401
 
-from scripts.data_workflow import run
+from submodules.data_workflow import run
 
 DEFAULT_CONFIG = 'config/z02_data.yaml'
 

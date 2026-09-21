@@ -26,7 +26,7 @@ import torch
 
 from submodules.contracts import resolve_path
 from submodules.runtime import load_config, configure_runtime
-from scripts.training_workflow import train, OVERRIDABLE, SMOKE_TEST, SMOKE_SAMPLES, BENCHMARK_DIR
+from submodules.training_workflow import train, OVERRIDABLE, SMOKE_TEST, SMOKE_SAMPLES, BENCHMARK_DIR
 
 DEFAULT_CONFIG = 'config/train_value.yaml'
 

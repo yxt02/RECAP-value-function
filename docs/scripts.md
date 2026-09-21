@@ -1,22 +1,25 @@
 # 脚本入口与输入输出接口
 
-所有操作通过独立脚本执行，每个脚本功能单一，互不重叠。数据准备、训练脚本位于 `scripts/`，测试、评估、报告脚本位于 `tests/`。
+所有操作通过独立脚本执行，每个脚本功能单一，互不重叠。
 
-代码放在三处：`scripts/` 存放数据预处理和训练脚本，`tests/` 存放测试和评估脚本，`submodules/` 存放被它们复用的核心模块（模型、缓存、评估统计、特征加载、数据加载、共享合同）。
+**目录结构：**
+- `scripts/` — 入口脚本（数据预处理、训练）
+- `tests/` — 单元测试
+- `submodules/` — 核心模块、工作流实现、工具脚本
 
 ```bash
 conda activate value_function
 cd /home/zoyi/my_work/RECAP-value-function-main
 
-# 数据预处理与训练
+# 数据预处理与训练（入口）
 python scripts/prepare_data.py --help
 python scripts/train.py --help
 
-# 测试与评估
-python tests/benchmark.py --help
-python tests/check_cache.py --help
-python tests/evaluate.py --help
-python tests/render.py --help
+# 工具脚本（位于 submodules/）
+python submodules/benchmark.py --help
+python submodules/check_cache.py --help
+python submodules/evaluate.py --help
+python submodules/render.py --help
 ```
 
 所有相对输入和输出路径均相对**工程根目录**，也可传绝对路径；从其他目录调用时使用入口的绝对路径。
@@ -74,15 +77,15 @@ python scripts/train.py --smoke_test
 python scripts/train.py --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples 64 --save_dir artifacts/smoke/custom
 ```
 
-## 3. 测试与评估命令
+## 3. 测试与评估命令（位于 submodules/）
 
-### `tests/check_cache.py`
+### `submodules/check_cache.py`
 
 **输入：** `--config`（默认训练配置）、匹配的完整 train 缓存、SigLIP 权重，以及配置保存目录中存在的 `best_model.pt`。需要 CUDA；缺少 checkpoint 时只检查缓存，结果明确记为 `not tested`。
 
 **输出：** `--output` 指定 JSON，默认 `artifacts/performance/cache-verification.json`。比较有界真实帧上的在线编码、缓存预测、标签及 checkpoint 重载。输入缓存或权重不被修改。
 
-### `tests/benchmark.py`
+### `submodules/benchmark.py`
 
 **输入：** `--config` 和必填 `--mode gpu|loader|head`。
 
@@ -94,7 +97,7 @@ python scripts/train.py --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples
 
 以下命令通过同一评估目录传递数据，记作 `EVAL_DIR`。
 
-### `tests/evaluate.py`
+### `submodules/evaluate.py`
 
 **输入：** `--checkpoint`，默认 `checkpoints/optimized/best_model.pt`；checkpoint 配置、匹配的原始数据、当前 `data/splits/{train,val,test}.json` 和编码器。当前是固定的全 test 评估，不支持任意 split；简单对照仅用 train 拟合。需要原有 CUDA/BF16 环境。
 
@@ -113,22 +116,22 @@ python scripts/train.py --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples
 
 可能创建或复用特征缓存。不会训练或修改 checkpoint。相同目录有协议一致性检查；重跑可能覆盖评估文件，新实验建议使用新目录。该命令**不生成 HTML**；图表和报告由 `render.py` 生成。
 
-### `tests/render.py`
+### `submodules/render.py`
 
 **输入：** `EVAL_DIR` 下的 protocol、metrics、episodes、predictions；配套图片和视频供 HTML 引用。
 
 **输出：** `index.html`、`trajectories/*.html`、`plots/*.png`、`overview.png`、`all_trajectories.png`、`intervention_events.png`；覆盖派生图表。重新制作图表只需 `render`，不用再次运行模型。报告页面直接引用 `videos/` 下的原始视频符号链接，因此这些链接必须保持可用。
 
 ```bash
-python tests/evaluate.py --output artifacts/evaluation/new-run
-python tests/render.py artifacts/evaluation/new-run
+python submodules/evaluate.py --output artifacts/evaluation/new-run
+python submodules/render.py artifacts/evaluation/new-run
 ```
 
 **绘图环境：** 已在 `value_function` 环境中验证 matplotlib 3.10.9。首次配置环境时安装可选绘图依赖；不再依赖系统 Python 的包：
 
 ```bash
 python -m pip install -r requirements-plotting.txt
-python tests/render.py artifacts/evaluation/new-run
+python submodules/render.py artifacts/evaluation/new-run
 ```
 
 matplotlib 只在 `render.py` 调用 `configure_plots()` 时导入，`evaluate.py` 不导入绘图库。绘图需要 NumPy 和 matplotlib，其他核心流程继续使用 `value_function` 环境。
@@ -165,16 +168,16 @@ bash run_test.sh --dry-run
 
 ## 旧入口迁移
 
-旧脚本已移入 `scripts/` 和 `tests/`，不保留十个转发文件。历史实验报告中的命令作为溯源记录保留；重新执行时按下表替换，原参数保持可用。
+旧脚本已移入 `scripts/` 和 `submodules/`，不保留十个转发文件。历史实验报告中的命令作为溯源记录保留；重新执行时按下表替换，原参数保持可用。
 
 | 旧脚本 | 新命令 |
 |---|---|
 | adapt_z02.py | `python scripts/prepare_data.py` |
 | train_value.py | `python scripts/train.py` |
-| benchmark_value.py | `python tests/benchmark.py` |
-| verify_feature_cache.py | `python tests/check_cache.py` |
-| evaluate_value.py | `python tests/evaluate.py` |
-| render_value_evaluation.py | `python tests/render.py` |
+| benchmark_value.py | `python submodules/benchmark.py` |
+| verify_feature_cache.py | `python submodules/check_cache.py` |
+| evaluate_value.py | `python submodules/evaluate.py` |
+| render_value_evaluation.py | `python submodules/render.py` |
 
 ## 目录整合
 

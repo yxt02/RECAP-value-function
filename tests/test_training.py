@@ -24,10 +24,10 @@ from transformers import SiglipVisionConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# The scripts/ directory holds the single workflow implementation.
-SCRIPTS_DIR = ROOT / 'scripts'
-if str(SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPTS_DIR))
+# The submodules/ directory holds the workflow implementations.
+SUBMODULES_DIR = ROOT / 'submodules'
+if str(SUBMODULES_DIR) not in sys.path:
+    sys.path.insert(0, str(SUBMODULES_DIR))
 import training_workflow as training
 
 
