@@ -44,11 +44,31 @@ CACHE_REPORT = 'artifacts/performance/cache-verification.json'
 OVERRIDABLE = {'batch_size': int, 'num_epochs': int, 'lr': float, 'warmup_steps': int,
                'max_total_steps': int, 'early_stopping_patience': int, 'max_samples': int,
                'max_steps': int, 'val_steps': int, 'num_workers': int,
-               'cache_batch_size': int, 'cached_batch_size': int, 'save_dir': str}
+               'cache_batch_size': int, 'cached_batch_size': int, 'save_dir': str,
+               'num_bins': int}
 
 # --smoke_test: a few real batches, a bounded sample budget, throwaway output.
 SMOKE_TEST = dict(num_epochs=1, max_steps=4, val_steps=2)
 SMOKE_SAMPLES = 256
+
+
+def targets_to_bin_indices(targets, num_bins, low=-1.0, high=0.0):
+    """Convert continuous targets in [low, high] to bin indices in [0, num_bins-1].
+
+    Args:
+        targets: Tensor of shape [B, 1] or [B].
+        num_bins: Number of bins.
+        low: Lower bound of the value range.
+        high: Upper bound of the value range.
+
+    Returns:
+        Long tensor of bin indices, shape [B].
+    """
+    targets = targets.clamp(low, high)
+    # Map [low, high] -> [0, 1] -> [0, num_bins-1]
+    normalized = (targets - low) / (high - low)
+    indices = (normalized * (num_bins - 1)).round().long().squeeze(-1)
+    return indices.clamp(0, num_bins - 1)
 
 
 def epoch(model, loader, config, device, optimizer=None, scheduler=None, max_steps=None):
@@ -56,8 +76,10 @@ def epoch(model, loader, config, device, optimizer=None, scheduler=None, max_ste
     training = optimizer is not None
     model.train(training)
     loss_sum = torch.zeros((), device=device)
+    mse_sum = torch.zeros((), device=device)
     count = steps = 0
     start = time.perf_counter()
+    num_bins = config.get('num_bins', 201)
     # The cap must come from make_loader; otherwise workers keep decoding prefetched batches.
     limit = min(len(loader), int(max_steps)) if max_steps is not None else len(loader)
     if limit != len(loader):
@@ -68,8 +90,16 @@ def epoch(model, loader, config, device, optimizer=None, scheduler=None, max_ste
             if training:
                 optimizer.zero_grad(set_to_none=True)
             with autocast(config, device):
-                predictions = model(images=batch.get('images'), features=batch.get('features'))
-                loss = nn.functional.mse_loss(predictions.float(), batch['target_values'])
+                targets = batch['target_values']
+                # Get distribution logits and compute expectation
+                _, log_probs = model(images=batch.get('images'), features=batch.get('features'),
+                                     return_distribution=True)
+                # Cross-entropy loss: target bin index vs predicted distribution
+                bin_indices = targets_to_bin_indices(targets, num_bins)
+                loss = nn.functional.cross_entropy(log_probs, bin_indices)
+                # Also compute MSE on expected value for monitoring
+                expectation = (log_probs.exp() * model.bin_centers).sum(dim=-1, keepdim=True)
+                mse = nn.functional.mse_loss(expectation.float(), targets.float())
             if not torch.isfinite(loss):
                 raise FloatingPointError('Non-finite loss')
             if training:
@@ -78,19 +108,22 @@ def epoch(model, loader, config, device, optimizer=None, scheduler=None, max_ste
                                          config['clip_grad_norm'], error_if_nonfinite=True)
                 optimizer.step()
                 scheduler.step()
-            n = len(predictions)
+            n = len(targets)
             count += n
             steps += 1
             loss_sum += loss.detach() * n
+            mse_sum += mse.detach() * n
             if training and steps % int(config['log_interval']) == 0:
-                logger.info('Step %d/%d, MSE %.6f, LR %.3g',
-                            steps, limit, (loss_sum / count).item(), scheduler.get_last_lr()[0])
+                logger.info('Step %d/%d, CE %.6f, MSE %.6f, LR %.3g',
+                            steps, limit, (loss_sum / count).item(),
+                            (mse_sum / count).item(), scheduler.get_last_lr()[0])
     if count == 0:
         raise ValueError('No samples processed')
     if device.type == 'cuda':
         torch.cuda.synchronize()
     elapsed = time.perf_counter() - start
-    return {'mse': (loss_sum / count).item(), 'samples': count, 'steps': steps,
+    return {'ce': (loss_sum / count).item(), 'mse': (mse_sum / count).item(),
+            'samples': count, 'steps': steps,
             'seconds': elapsed, 'samples_per_second': count / elapsed}
 
 
@@ -140,8 +173,10 @@ def train(config, smoke_test=False, prepare_cache=False):
     cached = config['feature_cache'] and all(
         (cache_location(d, config, s)[0] / 'manifest.json').exists()
         for d, s in [(train_data, 'train'), (val_data, 'val')])
+    num_bins = config.get('num_bins', 201)
     model = ValueModel(str(resolve_path(config['siglip_path'])), config['cameras'], config['freeze_vlm'],
-                       config['precision'], config['projection_dim'], load_encoder=not cached).to(device)
+                       config['precision'], config['projection_dim'], load_encoder=not cached,
+                       num_bins=num_bins).to(device)
 
     if config['feature_cache']:
         train_data = prepare_features(train_data, model, config, 'train', device)
@@ -196,8 +231,9 @@ def train(config, smoke_test=False, prepare_cache=False):
                         'train': training, 'val': validation})
         logger.info('%s', json.dumps(history[-1]))
 
-        if validation['mse'] < best:
-            best = validation['mse']
+        # Use cross-entropy loss for model selection (primary metric)
+        if validation['ce'] < best:
+            best = validation['ce']
             # Save the head only; the frozen encoder is identified by config and cache manifest.
             state = {k: v for k, v in model.state_dict().items()
                      if not (config['freeze_vlm'] and k.startswith('siglip.'))}
@@ -211,8 +247,8 @@ def train(config, smoke_test=False, prepare_cache=False):
             tmp.replace(save_dir / 'best_model.pt')
         (save_dir / 'metrics.json').write_text(json.dumps(history, indent=2) + '\n')
 
-        if validation['mse'] < early_best - float(config['early_stopping_min_delta']):
-            early_best = validation['mse']
+        if validation['ce'] < early_best - float(config['early_stopping_min_delta']):
+            early_best = validation['ce']
             stale_epochs = 0
         else:
             stale_epochs += 1
@@ -294,7 +330,9 @@ def benchmark_gpu(cfg):
     gc.collect()
     torch.cuda.empty_cache()
 
-    model = ValueModel(str(PROJECT_ROOT / cfg['siglip_path']), cfg['cameras'], True, 'bf16').cuda()
+    num_bins = cfg.get('num_bins', 201)
+    model = ValueModel(str(PROJECT_ROOT / cfg['siglip_path']), cfg['cameras'], True, 'bf16',
+                       num_bins=num_bins).cuda()
     for size in [8, 16, 32, 64, 128]:
         try:
             results.append({**timed_gpu(model, cfg, size), 'implementation': 'optimized_bf16'})
@@ -341,12 +379,14 @@ def benchmark_head(cfg):
     ds = raw_dataset(cfg, 'train')
     path, digest, _ = cache_location(ds, cfg, 'train')
     ds = FeatureDataset(path, digest)
+    num_bins = cfg.get('num_bins', 201)
     results = []
     for resident in [False, True]:
         cfg['cache_on_device'] = resident
         for size in [256, 512, 1024, 2048]:
             model = ValueModel(str(PROJECT_ROOT / cfg['siglip_path']), cfg['cameras'], True,
-                               cfg['precision'], cfg['projection_dim'], load_encoder=False).cuda()
+                               cfg['precision'], cfg['projection_dim'], load_encoder=False,
+                               num_bins=num_bins).cuda()
             loader = make_loader(ds, cfg, 'train', batch_size=size, workers=0)
             opt = torch.optim.AdamW(model.parameters(), lr=cfg['lr'], fused=True)
             sched = build_scheduler(opt, len(loader) * 3, 0)
@@ -391,8 +431,9 @@ def main_check_cache(argv=None):
     ds = raw_dataset(cfg, 'train')
     path, digest, _ = cache_location(ds, cfg, 'train')
     cached = FeatureDataset(path, digest)
+    num_bins = cfg.get('num_bins', 201)
     model = ValueModel(str(PROJECT_ROOT / cfg['siglip_path']), cfg['cameras'], True,
-                       cfg['precision'], cfg['projection_dim']).cuda().eval()
+                       cfg['precision'], cfg['projection_dim'], num_bins=num_bins).cuda().eval()
 
     head = None
     checkpoint = PROJECT_ROOT / cfg['save_dir'] / 'best_model.pt'
@@ -404,7 +445,8 @@ def main_check_cache(argv=None):
         assert not result.unexpected_keys
         assert all(k.startswith('siglip.') for k in result.missing_keys)
         head = ValueModel(str(PROJECT_ROOT / cfg['siglip_path']), cfg['cameras'], True,
-                          cfg['precision'], cfg['projection_dim'], load_encoder=False).cuda().eval()
+                          cfg['precision'], cfg['projection_dim'], load_encoder=False,
+                          num_bins=num_bins).cuda().eval()
         head.load_state_dict(payload['model_state_dict'], strict=True)
 
     # Cover the first batch, the last batch and every concatenated-dataset boundary.

@@ -1,4 +1,4 @@
-# Local SigLIP + scalar regression baseline (Gemma was never used by forward).
+# Local SigLIP + distributional value baseline (201-bin categorical).
 # python scripts/value_function.py value train --smoke_test
 adaptation_config: config/z02_data.yaml
 cameras: [cam2]
@@ -6,6 +6,7 @@ siglip_path: models/siglip2-so400m-patch14-224
 freeze_vlm: true
 projection_dim: 640
 precision: bf16
+num_bins: 201  # Number of bins for categorical value distribution
 seed: 42
 torch_threads: 4
 
