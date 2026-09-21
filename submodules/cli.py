@@ -13,7 +13,6 @@ from pathlib import Path
 COMMANDS = {
     'data': {
         'prepare': ('data_workflow', '审计/导入数据，写入回报标签和轨迹划分'),
-        'survey': ('data_workflow', '比较同批次轨迹配对的可行性'),
     },
     'value': {
         'train': ('training_workflow', '训练标量价值模型；--prepare-cache 只构建特征缓存'),
