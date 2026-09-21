@@ -88,7 +88,11 @@ def prepare_features(dataset, model, config, split, device):
         logger.info('Reusing %s', path)
         return FeatureDataset(path, digest)
     path.parent.mkdir(parents=True, exist_ok=True)
-    loader = make_loader(dataset, config, split, batch_size=config['cache_batch_size'],
+    # A cache split is consumed once; there is no next epoch for workers to persist.
+    cache_config = {**config, 'persistent_workers': False}
+    logger.info('Cache %s: starting extraction, workers=%d, persistent_workers=False',
+                split, config['cache_num_workers'])
+    loader = make_loader(dataset, cache_config, split, batch_size=config['cache_batch_size'],
                          workers=config['cache_num_workers'], sequential=True)
     model.eval()
     started = last_log = time.perf_counter()
@@ -116,7 +120,9 @@ def prepare_features(dataset, model, config, split, device):
                 last_log = now
         if offset != len(dataset):
             raise ValueError('Incomplete feature extraction')
+        logger.info('Cache %s: iteration finished; flushing arrays', split)
         features.flush(); targets.flush(); del features, targets
+        logger.info('Cache %s: computing file checksums', split)
         manifest = {'digest':digest, 'identity':identity, 'count':offset, 'feature_dim':model.feature_dim,
                     'seconds':time.perf_counter()-started,
                     'files_sha256':{name:sha256(staging/name) for name in ('features.npy','targets.npy')}}
@@ -125,5 +131,9 @@ def prepare_features(dataset, model, config, split, device):
         if path.exists():
             raise FileExistsError(f'Cache already exists: {path}; retry to reuse it')
         staging.rename(path)
+        logger.info('Cache %s: published %s', split, path)
     del loader
-    return FeatureDataset(path, digest)
+    logger.info('Cache %s: loading and verifying completed arrays', split)
+    result = FeatureDataset(path, digest)
+    logger.info('Cache %s: ready (%d frames)', split, len(result))
+    return result

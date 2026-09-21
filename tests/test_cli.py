@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS_DIR = {
     'prepare_data.py': 'scripts',
     'train.py': 'scripts',
+    'calculate_advantage.py': 'scripts',
     'benchmark.py': 'submodules',
     'check_cache.py': 'submodules',
     'evaluate.py': 'submodules',

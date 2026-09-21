@@ -44,7 +44,7 @@ CACHE_REPORT = 'artifacts/performance/cache-verification.json'
 OVERRIDABLE = {'batch_size': int, 'num_epochs': int, 'lr': float, 'warmup_steps': int,
                'max_total_steps': int, 'early_stopping_patience': int, 'max_samples': int,
                'max_steps': int, 'val_steps': int, 'num_workers': int,
-               'cache_batch_size': int, 'cached_batch_size': int, 'save_dir': str,
+               'cache_batch_size': int, 'cache_num_workers': int, 'cached_batch_size': int, 'save_dir': str,
                'num_bins': int}
 
 # --smoke_test: a few real batches, a bounded sample budget, throwaway output.
@@ -65,9 +65,9 @@ def targets_to_bin_indices(targets, num_bins, low=-1.0, high=0.0):
         Long tensor of bin indices, shape [B].
     """
     targets = targets.clamp(low, high)
-    # Map [low, high] -> [0, 1] -> [0, num_bins-1]
+    # Match the equal-width bin edges used by ValueModel.bin_centers.
     normalized = (targets - low) / (high - low)
-    indices = (normalized * (num_bins - 1)).round().long().squeeze(-1)
+    indices = (normalized * num_bins).floor().long().reshape(-1)
     return indices.clamp(0, num_bins - 1)
 
 
@@ -238,7 +238,7 @@ def train(config, smoke_test=False, prepare_cache=False):
             state = {k: v for k, v in model.state_dict().items()
                      if not (config['freeze_vlm'] and k.startswith('siglip.'))}
             tmp = save_dir / 'best_model.pt.tmp'
-            torch.save({'format_version': 2, 'architecture': 'siglip_mean_patch_scalar',
+            torch.save({'format_version': 2, 'architecture': 'siglip_mean_patch_categorical',
                         'epoch': ep + 1, 'global_step': global_step, 'config': config,
                         'model_state_dict': state, 'optimizer_state_dict': optimizer.state_dict(),
                         'scheduler_state_dict': scheduler.state_dict(), 'val_loss': best,
@@ -424,9 +424,16 @@ def main_check_cache(argv=None):
     parser = argparse.ArgumentParser(description='验证缓存特征与在线编码的一致性')
     parser.add_argument('--config', default=DEFAULT_CONFIG, help='训练配置文件路径')
     parser.add_argument('--output', default=CACHE_REPORT, help='输出 JSON 文件路径')
+    parser.add_argument('--checkpoint', help='检查指定 checkpoint；使用其保存的配置')
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    checkpoint = resolve_path(args.checkpoint) if args.checkpoint else resolve_path(cfg['save_dir']) / 'best_model.pt'
+    if args.checkpoint:
+        payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
+        from submodules.checkpoint import distribution_bins
+        bins = distribution_bins(payload)
+        cfg = {**payload['config'], 'num_bins': bins}
     configure_runtime(cfg)
     ds = raw_dataset(cfg, 'train')
     path, digest, _ = cache_location(ds, cfg, 'train')
@@ -436,7 +443,6 @@ def main_check_cache(argv=None):
                        cfg['precision'], cfg['projection_dim'], num_bins=num_bins).cuda().eval()
 
     head = None
-    checkpoint = PROJECT_ROOT / cfg['save_dir'] / 'best_model.pt'
     if checkpoint.exists():
         payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
         assert payload['format_version'] == 2

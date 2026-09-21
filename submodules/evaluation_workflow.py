@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluation and HTML report workflows for the frozen-encoder scalar value baseline.
+"""Evaluation and HTML report workflows for the frozen-encoder distributional value model.
 
     python scripts/evaluation_workflow.py evaluate --checkpoint checkpoints/optimized/best_model.pt
     python scripts/evaluation_workflow.py render artifacts/evaluation/<run>
@@ -13,6 +13,8 @@ import json
 import logging
 from pathlib import Path
 import sys
+
+logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -52,6 +54,7 @@ def dump(path, value):
 
 def split_metadata(data, split):
     """Episode metadata and normalized targets for one split, checked against the split manifest."""
+    import numpy as np
     manifest = json.loads((PROJECT_ROOT / f'data/splits/{split}.json').read_text())
     lookup = {(e['dataset'], e['episode_index']): e for e in manifest['episodes']}
     episodes = []
@@ -108,11 +111,11 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
     output.mkdir(parents=True, exist_ok=True)
 
     payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    if payload.get('format_version') != 2 or payload.get('architecture') != 'siglip_mean_patch_scalar':
-        raise ValueError('Unsupported checkpoint')
+    from submodules.checkpoint import distribution_bins
+    num_bins = distribution_bins(payload)
 
     config = dict(payload['config'])
-    config.update(max_samples=None, max_steps=None, val_steps=None)
+    config.update(max_samples=None, max_steps=None, val_steps=None, cache_num_workers=0)
 
     if not torch.cuda.is_available():
         raise RuntimeError('Use the original CUDA/BF16 environment for this audit')
@@ -181,7 +184,7 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
         str(resolve_path(config['siglip_path'])),
         config['cameras'], True, config['precision'],
         config['projection_dim'],
-        load_encoder=not (path / 'manifest.json').exists()
+        num_bins=num_bins, load_encoder=not (path / 'manifest.json').exists()
     ).cuda().eval()
 
     cached = prepare_features(test, model, config, 'test', torch.device('cuda'))
@@ -423,6 +426,7 @@ def page(title, body):
 
 def shade(ax, t, flags):
     """Shade the spans where the intervention flag is set."""
+    import numpy as np
     starts = np.flatnonzero((flags == 1) & np.r_[True, flags[:-1] == 0])
     ends = np.flatnonzero((flags == 1) & np.r_[flags[1:] == 0, True])
     for a, b in zip(starts, ends):

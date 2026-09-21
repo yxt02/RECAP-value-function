@@ -199,3 +199,7 @@ bash run_test.sh --dry-run
 - 评估验证输出位于 `artifacts/evaluation/cli-integration-smoke`；源评估输入复制或只读链接，原报告未覆盖。本次没有重新执行完整评估推理或全量训练。
 
 > 2026-09-21 清理说明：上文记录的评估和冒烟产物及特征缓存已删除，验证记录保留。使用相关命令前须重新生成其输入产物。历史性能对照源码保留在 `submodules/reference/`。
+
+## 优势计算入口
+
+新增 `python scripts/calculate_advantage.py`，默认完整测试集、50 帧前瞻、固定阈值 0。输入输出及所有参数见 [优势计算说明](advantage.md)。

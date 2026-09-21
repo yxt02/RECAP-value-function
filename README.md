@@ -2,14 +2,15 @@
 
 本工程独立实现 z02 机器人数据适配、视觉价值模型训练、逐轨迹评分与评估报告。RLinf 仅作为实现思路参考，运行不依赖 RLinf 或 Ray。
 
-当前模型冻结 SigLIP2，对各相机的图像分块特征取平均，再训练标量回归网络，输出范围为 `[-1, 0]`。它是视觉价值基线，尚不是带语言条件和 201 档价值分布的完整 RECAP critic。
+当前模型冻结 SigLIP2，对各相机的图像分块特征取平均，训练 201 档价值分布，并以分布的期望作为 `[-1, 0]` 范围内的价值评分。当前仍是纯视觉模型，没有语言条件或 π 策略训练。
 
 ## 目录结构
 
 ```
-scripts/              # 入口脚本（数据预处理 + 训练）
+scripts/              # 入口脚本（数据预处理、训练、优势评分）
 ├── prepare_data.py   # 数据审计、回报、划分
-└── train.py          # 模型训练
+├── train.py          # 模型训练
+└── calculate_advantage.py # 多步优势、标签与接管对比
 
 tests/                # 单元测试
 ├── test_cli.py
@@ -39,6 +40,7 @@ submodules/           # 核心模块 + 工具 + 工作流
 |---|---|
 | `scripts/prepare_data.py` | 数据审计、回报计算、轨迹划分 |
 | `scripts/train.py` | 模型训练 |
+| `scripts/calculate_advantage.py` | 价值推理、多步优势、条件标签、逐轨迹图表 |
 
 ### 工具脚本（位于 submodules/）
 
@@ -69,11 +71,11 @@ python submodules/render.py --help
 
 已完成：数据适配、回报计算、价值训练、独立测试、时序诊断和逐轨迹可视化。
 
-待实现：正式的 advantage/disadvantage 标签导出及其阈值对比界面。目前的时序诊断不等于已完成优势条件策略训练；π 策略训练与动作生成不在当前实现中。
+已实现：逐帧 advantage/disadvantage 标签导出、多前瞻长度曲线、固定阈值调整及接管前后对比。输出是模型评分；π 策略训练与动作生成不在当前实现中。
 
 ## 下一阶段需求
 
-剩余的优势评分、advantage/disadvantage 标签和轨迹对比功能，见 [需求与实施方案](docs/remaining_requirements.md)。文档明确已有能力、待实现接口、计算规则、实施顺序和验收标准；拟定命令尚未实现。
+已实现接口和计算规则见 [优势计算使用说明](docs/advantage.md)，本次问题与验收记录见 [重构审阅](docs/refactor_review.md)。[原需求方案](docs/remaining_requirements.md) 保留为历史设计，实际命令以新接口文档为准。
 
 ## 本机运行
 
@@ -109,7 +111,7 @@ python -m pip install -r requirements-plotting.txt
 
 实际训练配置为 **`config/train_value.yaml`**；数据适配配置为 `config/z02_data.yaml`。这两份是仓库中唯一的配置。
 
-默认首次运行会完整缓存 train/val 的冻结视觉特征，然后训练回归头。后续运行校验缓存后直接训练。可提前生成缓存：
+默认首次运行会完整缓存 train/val 的冻结视觉特征，然后训练分布价值头。后续运行校验缓存后直接训练。可提前生成缓存：
 
 ```bash
 python scripts/train.py --prepare-cache
@@ -127,9 +129,9 @@ python scripts/train.py --no-cache --smoke_test
 
 `num_epochs` 和 `max_total_steps` 都是上限，先达到的生效。`max_steps` 是**每轮**的可选限制，正常训练为 null；`val_steps` 为 null 表示每轮使用完整验证集。`max_samples` 只用于开发时限制样本，正常训练不截断数据。
 
-每轮结束验证并保存最低验证 MSE 对应的回归头；验证 MSE 连续 `early_stopping_patience` 轮没有至少 `early_stopping_min_delta` 的改善时早停。学习率采用 warmup + cosine，warmup 会随短测试的实际预算缩短。日志显示 global_step，避免混淆 epoch 内 step 和总 step。默认总步数是按缓存训练的 batch 设置的；若改成全量在线训练或更换 batch，需要同时重新考虑总样本曝光次数。
+每轮结束验证并保存最低验证交叉熵（CE）对应的分布价值头；验证 CE 连续 `early_stopping_patience` 轮没有至少 `early_stopping_min_delta` 的改善时早停。学习率采用 warmup + cosine，warmup 会随短测试的实际预算缩短。日志显示 global_step，避免混淆 epoch 内 step 和总 step。默认总步数是按缓存训练的 batch 设置的；若改成全量在线训练或更换 batch，需要同时重新考虑总样本曝光次数。
 
-本机已完成一次全量缓存训练：第 20 轮 / 4,840 步早停，最佳模型来自第 16 轮，验证 MSE 约 0.01161。当前默认上限为 24 轮 / 5,000 步，缓存 batch=1024、warmup=200。
+当前分布模型已完成全量训练：第 14 轮 / 3,388 步早停，最佳 checkpoint 来自第 10 轮 / 2,420 步，验证 CE 约 3.31683。该 checkpoint 使用分档修正前的训练标签；本次未重新训练或覆盖它。当前默认上限为 24 轮 / 5,000 步，缓存 batch=1024、warmup=200。
 
 输出目录是 `checkpoints/optimized/`，包含 `best_model.pt`、实际 `config.json` 和逐轮 `metrics.json`。冻结的视觉权重不重复写入 checkpoint；加载时需要保留原 SigLIP 模型目录。checkpoint 的 format_version 为 2，不能直接套用旧入口的模型结构。
 
@@ -164,9 +166,9 @@ python submodules/check_cache.py           # 比较缓存与在线编码，并�
 
 `--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `submodules/reference/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
 
-## 当前 checkpoint 独立测试
+## 历史标量 checkpoint 独立测试
 
-已完成全部 37 条测试轨迹 / 34,759 帧评估。测试 MSE **0.02746**，批次+帧序号对照 **0.02250**；旧批次失败误差和逐帧波动较大，暂不建议直接用于 RECAP 优势标签。详情见 [独立测试报告](docs/independent_test.md)。
+以下为旧标量模型的历史记录，不代表当前 201 档 checkpoint：已完成全部 37 条测试轨迹 / 34,759 帧评估。测试 MSE **0.02746**，批次+帧序号对照 **0.02250**；旧批次失败误差和逐帧波动较大，暂不建议直接用于 RECAP 优势标签。详情见 [独立测试报告](docs/independent_test.md)。
 
 ## 生成与浏览评估报告
 
@@ -203,7 +205,7 @@ bash run_train.sh --dry-run
 bash run_test.sh --dry-run
 ```
 
-## 本次入口整合验证
+## 历史入口整合验证（优势脚本实现前）
 
 2026-09-21 的验证结果：
 
@@ -213,6 +215,24 @@ bash run_test.sh --dry-run
 
 本次验证没有重新执行全量训练或完整评估。冒烟结果分别放在 `artifacts/performance/cli-integration-smoke/` 和 `artifacts/evaluation/cli-integration-smoke/`，均不纳入版本控制。
 
-## 生成文件清理
+## 历史生成文件清理
 
 2026-09-21 已清理历史评估文件、试跑产物、日志和特征缓存；上文数值为历史验证记录，不表示这些产物仍在本地。原始数据、数据划分、回报标签、预训练权重和正式 checkpoint 保留。下一次训练会重新生成所需缓存；报告可按上述命令重建。`artifacts/` 不再纳入版本控制。
+
+## 计算优势与接管对比
+
+```bash
+# 默认完整 test，50 帧前瞻，固定阈值 0
+python scripts/calculate_advantage.py --output artifacts/advantage/my-test
+
+# 对全部 split 评分；train 分数不属于独立测试
+python scripts/calculate_advantage.py --split all --output artifacts/advantage/my-all
+
+# 复用已生成的价值，不重复推理；输出到新目录
+python scripts/calculate_advantage.py --reuse-values artifacts/advantage/my-test \
+  --horizon 1 10 50 --threshold 0.01 --output artifacts/advantage/my-comparison
+```
+
+打开输出目录的 `index.html`。逐帧价值、优势及标签分别见 `values.parquet`、`scores.parquet`。普通非终止窗口中，50 帧优势为 `V(t+50) - V(t) - 50/4000`；接近轨迹末尾时按实际剩余帧数及终止奖励计算，失败惩罚不会丢弃。完整字段与边界定义见 [接口说明](docs/advantage.md)。
+
+本次优势脚本验收已完整运行 327 条轨迹 / 310,031 帧，并单独运行完整 test 的 37 条轨迹 / 34,759 帧。29 项单元测试通过；缓存已重建，详细结果见 [重构审阅与验收](docs/refactor_review.md)。

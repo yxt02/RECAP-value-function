@@ -23,7 +23,7 @@ video_cache_handles: 4
 feature_cache: true
 cache_dir: data/cache/value_features_v1
 cache_batch_size: 16
-cache_num_workers: 4
+cache_num_workers: 0  # Safe local default: a spawned validation worker exited with SIGSEGV.
 cached_batch_size: 1024
 cached_num_workers: 0
 cache_on_device: true  # ~0.60 GiB train+val; fall back to CPU if GPU memory is tight.

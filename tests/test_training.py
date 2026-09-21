@@ -189,12 +189,15 @@ class TrainingTests(unittest.TestCase):
                 self.calls+=1
                 return images['observation.images.cam2'].mean(1)
         cfg=dict(freeze_vlm=True,cache_batch_size=2,cache_num_workers=0,
-                 batch_size=2,pin_memory=False,precision='fp32')
+                 batch_size=2,pin_memory=False,precision='fp32',persistent_workers=True)
         with tempfile.TemporaryDirectory() as temporary:
             path=Path(temporary)/'complete'
             model=Encoder()
-            with patch('submodules.cache.cache_location',return_value=(path,'digest',{})):
+            with patch('submodules.cache.cache_location',return_value=(path,'digest',{})), \
+                 patch('submodules.cache.make_loader', wraps=make_loader) as loader_factory:
                 cached=prepare_features(Data(),model,cfg,'train',torch.device('cpu'))
+                self.assertFalse(loader_factory.call_args.args[1]['persistent_workers'])
+                self.assertTrue(cfg['persistent_workers'])
                 self.assertEqual(model.calls,3)
                 torch.testing.assert_close(cached.features[:,0].float(),torch.arange(5).float())
                 torch.testing.assert_close(cached.targets,torch.arange(5).float()/-5)

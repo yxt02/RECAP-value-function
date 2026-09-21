@@ -1,4 +1,9 @@
 import unittest
+from unittest.mock import Mock, patch
+import tempfile
+import json
+from pathlib import Path
+from types import SimpleNamespace
 
 # Imported before numpy: submodules sets single-threaded BLAS, which this environment
 # needs for the heavy imports not to crash. See docs/scripts.md.
@@ -8,6 +13,25 @@ import numpy as np
 
 
 class EvaluationTests(unittest.TestCase):
+    def test_refactored_metadata_and_intervention_shading(self):
+        from submodules import evaluation_workflow as workflow
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'data/splits').mkdir(parents=True)
+            (root/'data/splits/test.json').write_text(json.dumps({'episodes':[
+                dict(dataset='A',episode_index=1,total_frames=3,is_success=True,raw_terminal_reward=0)]}))
+            ds=SimpleNamespace(dataset_path=Path('A'),episode_ids=[1],returns_data={1:{'return':np.array([-2.,-1.,0.])}},
+                               info={'fps':30},return_scale=4000)
+            class Data:
+                datasets=[ds]
+                def __len__(self): return 3
+            with patch.object(workflow,'PROJECT_ROOT',root):
+                episodes,targets=workflow.split_metadata(Data(),'test')
+            self.assertEqual(episodes[0]['frames'],3)
+            np.testing.assert_allclose(targets,[-.0005,-.00025,0])
+        ax=Mock()
+        workflow.shade(ax,np.arange(5.),np.array([0,1,1,0,1]))
+        self.assertEqual(ax.axvspan.call_count,2)
+
     def test_metrics_and_constant_prediction(self):
         y=np.array([-1.,-.5,0.]);p=np.array([-.5,-.5,-.5])
         result=regression(y,p)

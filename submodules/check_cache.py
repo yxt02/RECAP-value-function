@@ -36,6 +36,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description='验证缓存特征与在线编码的一致性')
     parser.add_argument('--config', default=DEFAULT_CONFIG, help='训练配置文件路径')
     parser.add_argument('--output', default=CACHE_REPORT, help='输出 JSON 文件路径')
+    parser.add_argument('--checkpoint', help='检查指定 checkpoint；使用其保存的配置')
     args = parser.parse_args(argv)
 
     print('=' * 60)
@@ -46,6 +47,12 @@ def main(argv=None):
     print('-' * 60)
 
     cfg = load_config(args.config)
+    checkpoint = resolve_path(args.checkpoint) if args.checkpoint else resolve_path(cfg['save_dir']) / 'best_model.pt'
+    if args.checkpoint:
+        payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
+        from submodules.checkpoint import distribution_bins
+        bins = distribution_bins(payload)
+        cfg = {**payload['config'], 'num_bins': bins}
     configure_runtime(cfg)
     ds = raw_dataset(cfg, 'train')
     path, digest, _ = cache_location(ds, cfg, 'train')
@@ -58,7 +65,6 @@ def main(argv=None):
     print(f'[缓存检查] 缓存摘要: {digest[:16]}...')
 
     head = None
-    checkpoint = PROJECT_ROOT / cfg['save_dir'] / 'best_model.pt'
     if checkpoint.exists():
         payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
         assert payload['format_version'] == 2
