@@ -2,7 +2,7 @@
 """从评估结果生成图表和 HTML 报告。
 
 用法：
-    python scripts/render.py artifacts/evaluation/<run>
+    python tests/render.py artifacts/evaluation/<run>
 
 详见 docs/scripts.md。
 """
@@ -13,8 +13,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / 'tests'))
 
-from scripts.evaluation_workflow import render
+from evaluation_workflow import render
 
 logger = logging.getLogger(__name__)
 

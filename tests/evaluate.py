@@ -2,9 +2,9 @@
 """使用固定 checkpoint 进行全测试集评估。
 
 用法：
-    python scripts/evaluate.py
-    python scripts/evaluate.py --checkpoint checkpoints/optimized/best_model.pt
-    python scripts/evaluate.py --output artifacts/evaluation/my-run
+    python tests/evaluate.py
+    python tests/evaluate.py --checkpoint checkpoints/optimized/best_model.pt
+    python tests/evaluate.py --output artifacts/evaluation/my-run
 
 详见 docs/scripts.md。
 """
@@ -16,8 +16,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
+sys.path.insert(0, str(PROJECT_ROOT / 'tests'))
 
-from scripts.evaluation_workflow import evaluate, DEFAULT_CHECKPOINT
+from evaluation_workflow import evaluate, DEFAULT_CHECKPOINT
 
 logger = logging.getLogger(__name__)
 

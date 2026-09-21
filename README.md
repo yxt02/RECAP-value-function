@@ -8,22 +8,35 @@
 
 所有操作通过独立脚本执行，每个脚本功能单一，互不重叠：
 
-| 脚本 | 功能 | 主要输入 → 输出 |
-|---|---|---|
-| `scripts/prepare_data.py` | 数据审计、回报计算、轨迹划分 | 原始数据与适配配置 → 回报标签、轨迹划分 |
-| `scripts/train.py` | 训练价值模型 | 训练配置、数据、视觉权重 → 特征缓存、checkpoint |
-| `scripts/benchmark.py` | 性能测试 | 训练配置 → GPU/加载器/缓存头吞吐量记录 |
-| `scripts/check_cache.py` | 缓存一致性验证 | 训练配置、缓存、checkpoint → 验证报告 |
-| `scripts/evaluate.py` | 全测试集评估 | checkpoint → 预测数组、指标 |
-| `scripts/render.py` | 报告渲染 | 评估结果 → 图表、HTML 报告 |
+### scripts/ — 数据预处理与训练
 
-另有 `run_all.sh` 按顺序执行完整流程（数据准备 → 训练 → 评估 → 报告）。
+| 脚本 | 功能 |
+|---|---|
+| `scripts/prepare_data.py` | 数据审计、回报计算、轨迹划分 |
+| `scripts/train.py` | 模型训练 |
+
+### tests/ — 测试与评估
+
+| 脚本 | 功能 |
+|---|---|
+| `tests/benchmark.py` | GPU/加载器/缓存头性能测试 |
+| `tests/check_cache.py` | 缓存一致性验证 |
+| `tests/evaluate.py` | 全测试集评估 |
+| `tests/render.py` | 图表和 HTML 报告渲染 |
+
+### 一键流程
+
+| 脚本 | 功能 |
+|---|---|
+| `run_train.sh` | 数据准备 + 训练 |
+| `run_test.sh` | 缓存检查 + 评估 + 报告 |
 
 目录结构：
 
 | 目录 | 内容 |
 |---|---|
-| `scripts/` | 独立命令行脚本和三个工作流 `data_workflow.py`、`training_workflow.py`、`evaluation_workflow.py` |
+| `scripts/` | 数据预处理、适配、训练脚本和工作流 |
+| `tests/` | 测试、评估、报告脚本和单元测试 |
 | `submodules/` | 被工作流复用的核心模块：模型、缓存、评估统计、特征加载、数据加载与共享合同 |
 
 完整参数、输入输出字段、写入范围、环境要求见 **[脚本接口文档](docs/scripts.md)**。相对文件路径均按工程根目录解析；从其他目录调用时，使用入口的绝对路径。
@@ -31,10 +44,10 @@
 ```bash
 python scripts/prepare_data.py --help
 python scripts/train.py --help
-python scripts/benchmark.py --help
-python scripts/check_cache.py --help
-python scripts/evaluate.py --help
-python scripts/render.py --help
+python tests/benchmark.py --help
+python tests/check_cache.py --help
+python tests/evaluate.py --help
+python tests/render.py --help
 ```
 
 已完成：数据适配、回报计算、价值训练、独立测试、时序诊断和逐轨迹可视化。
@@ -62,8 +75,11 @@ python scripts/train.py --smoke_test
 # 正式训练（会写入配置指定的保存目录）
 python scripts/train.py
 
-# 完整流程（数据准备 → 训练 → 评估 → 报告）
-bash run_all.sh
+# 完整流程（数据准备 + 训练）
+bash run_train.sh
+
+# 测试 + 报告
+bash run_test.sh
 ```
 
 需要生成图表时，在同一环境安装可选绘图依赖：
@@ -124,9 +140,9 @@ python scripts/prepare_data.py --config config/z02_data.yaml --all
 
 ```bash
 python -m unittest discover -s tests -v
-python scripts/benchmark.py --mode loader
-python scripts/benchmark.py --mode head  # 需要已完成的全量 train 缓存
-python scripts/check_cache.py           # 比较缓存与在线编码，并检查已有 checkpoint
+python tests/benchmark.py --mode loader
+python tests/benchmark.py --mode head  # 需要已完成的全量 train 缓存
+python tests/check_cache.py           # 比较缓存与在线编码，并检查已有 checkpoint
 ```
 
 `--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `submodules/reference/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
@@ -140,8 +156,8 @@ python scripts/check_cache.py           # 比较缓存与在线编码，并检�
 以下示例使用一个新的评估目录。`evaluate` 会评估完整测试集并写入预测数组；仅重新绘图时直接运行 `render`，无需重新推理。
 
 ```bash
-python scripts/evaluate.py --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
-python scripts/render.py artifacts/evaluation/my-run
+python tests/evaluate.py --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
+python tests/render.py artifacts/evaluation/my-run
 ```
 
 评估目录中的 `predictions.npz` 保存逐帧数组，`episodes.json` 保存轨迹及其数组区间，`metrics.json` 保存统计，`protocol.json` 保存评估约定。报告入口为 `index.html`，用任意静态文件服务打开即可。
@@ -150,17 +166,24 @@ python scripts/render.py artifacts/evaluation/my-run
 
 ## 完整流程
 
-使用 `run_all.sh` 按顺序执行所有步骤：
+使用 `run_train.sh` 和 `run_test.sh` 按顺序执行所有步骤：
 
 ```bash
-# 完整流程
-bash run_all.sh
+# 数据准备 + 训练
+bash run_train.sh
 
 # 冒烟测试模式
-bash run_all.sh --smoke_test
+bash run_train.sh --smoke_test
+
+# 测试 + 报告
+bash run_test.sh
+
+# 指定 checkpoint
+bash run_test.sh --checkpoint checkpoints/optimized/best_model.pt
 
 # 试运行（只显示将执行的步骤）
-bash run_all.sh --dry-run
+bash run_train.sh --dry-run
+bash run_test.sh --dry-run
 ```
 
 ## 本次入口整合验证

@@ -2,9 +2,9 @@
 """测量 GPU、数据加载器或缓存头的吞吐量。
 
 用法：
-    python scripts/benchmark.py --mode gpu      # GPU 吞吐量
-    python scripts/benchmark.py --mode loader   # 数据加载器
-    python scripts/benchmark.py --mode head     # 缓存头训练
+    python tests/benchmark.py --mode gpu      # GPU 吞吐量
+    python tests/benchmark.py --mode loader   # 数据加载器
+    python tests/benchmark.py --mode head     # 缓存头训练
 
 详见 docs/scripts.md。
 """

@@ -6,14 +6,15 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 
-SCRIPTS = [
-    'prepare_data.py',
-    'train.py',
-    'benchmark.py',
-    'check_cache.py',
-    'evaluate.py',
-    'render.py',
-]
+# Scripts split by location
+SCRIPTS_DIR = {
+    'prepare_data.py': 'scripts',
+    'train.py': 'scripts',
+    'benchmark.py': 'tests',
+    'check_cache.py': 'tests',
+    'evaluate.py': 'tests',
+    'render.py': 'tests',
+}
 
 
 class ScriptTests(unittest.TestCase):
@@ -21,10 +22,10 @@ class ScriptTests(unittest.TestCase):
 
     def test_help_flag(self):
         """Each script should show help and exit 0."""
-        for script in SCRIPTS:
+        for script, folder in SCRIPTS_DIR.items():
             with self.subTest(script=script):
                 result = subprocess.run(
-                    [sys.executable, str(ROOT / 'scripts' / script), '--help'],
+                    [sys.executable, str(ROOT / folder / script), '--help'],
                     cwd=str(ROOT),
                     text=True,
                     capture_output=True
@@ -37,7 +38,7 @@ class ScriptTests(unittest.TestCase):
     def test_benchmark_requires_mode(self):
         """benchmark.py should fail without --mode."""
         result = subprocess.run(
-            [sys.executable, str(ROOT / 'scripts' / 'benchmark.py')],
+            [sys.executable, str(ROOT / 'tests' / 'benchmark.py')],
             cwd=str(ROOT),
             text=True,
             capture_output=True
@@ -47,7 +48,7 @@ class ScriptTests(unittest.TestCase):
     def test_render_requires_output(self):
         """render.py should fail without output argument."""
         result = subprocess.run(
-            [sys.executable, str(ROOT / 'scripts' / 'render.py')],
+            [sys.executable, str(ROOT / 'tests' / 'render.py')],
             cwd=str(ROOT),
             text=True,
             capture_output=True

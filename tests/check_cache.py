@@ -2,8 +2,8 @@
 """验证缓存特征与在线编码的一致性。
 
 用法：
-    python scripts/check_cache.py
-    python scripts/check_cache.py --output artifacts/performance/my-check.json
+    python tests/check_cache.py
+    python tests/check_cache.py --output artifacts/performance/my-check.json
 
 详见 docs/scripts.md。
 """

@@ -1,18 +1,22 @@
 # 脚本入口与输入输出接口
 
-所有操作通过独立脚本执行，每个脚本功能单一，互不重叠。数据准备、训练及评估实现位于 `scripts/*_workflow.py`，按功能拆分以便测试和复用；无需安装 RLinf。
+所有操作通过独立脚本执行，每个脚本功能单一，互不重叠。数据准备、训练脚本位于 `scripts/`，测试、评估、报告脚本位于 `tests/`。
 
-代码只放在两处：`scripts/` 存放独立脚本和三个工作流，`submodules/` 存放被它们复用的核心模块（模型、缓存、评估统计、特征加载、数据加载、共享合同）。`tests/` 为单元测试。
+代码放在三处：`scripts/` 存放数据预处理和训练脚本，`tests/` 存放测试和评估脚本，`submodules/` 存放被它们复用的核心模块（模型、缓存、评估统计、特征加载、数据加载、共享合同）。
 
 ```bash
 conda activate value_function
 cd /home/zoyi/my_work/RECAP-value-function-main
+
+# 数据预处理与训练
 python scripts/prepare_data.py --help
 python scripts/train.py --help
-python scripts/benchmark.py --help
-python scripts/check_cache.py --help
-python scripts/evaluate.py --help
-python scripts/render.py --help
+
+# 测试与评估
+python tests/benchmark.py --help
+python tests/check_cache.py --help
+python tests/evaluate.py --help
+python tests/render.py --help
 ```
 
 所有相对输入和输出路径均相对**工程根目录**，也可传绝对路径；从其他目录调用时使用入口的绝对路径。
@@ -21,7 +25,7 @@ python scripts/render.py --help
 
 ## 1. 数据命令
 
-### `prepare_data.py`
+### `scripts/prepare_data.py`
 
 **输入：** `--config`，默认 `config/z02_data.yaml`。配置指定原始数据目录、数据集、22 维映射、结果覆盖规则、回报尺度、划分比例和输出目录。各数据集须包含 `data/**/episode_*.parquet`、`meta/info.json`、`meta/tasks.jsonl` 及所配置相机的视频。
 
@@ -44,7 +48,7 @@ python scripts/prepare_data.py --all --verify-videos
 
 ## 2. 价值模型命令
 
-### `train.py`
+### `scripts/train.py`
 
 **输入：** `--config`，默认 `config/train_value.yaml`；配置引用适配配置、划分、SigLIP 权重和训练参数。当前架构是冻结图像编码器加标量回归网络，不是完整多模态 RECAP critic。
 
@@ -70,13 +74,15 @@ python scripts/train.py --smoke_test
 python scripts/train.py --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples 64 --save_dir artifacts/smoke/custom
 ```
 
-### `check_cache.py`
+## 3. 测试与评估命令
+
+### `tests/check_cache.py`
 
 **输入：** `--config`（默认训练配置）、匹配的完整 train 缓存、SigLIP 权重，以及配置保存目录中存在的 `best_model.pt`。需要 CUDA；缺少 checkpoint 时只检查缓存，结果明确记为 `not tested`。
 
 **输出：** `--output` 指定 JSON，默认 `artifacts/performance/cache-verification.json`。比较有界真实帧上的在线编码、缓存预测、标签及 checkpoint 重载。输入缓存或权重不被修改。
 
-### `benchmark.py`
+### `tests/benchmark.py`
 
 **输入：** `--config` 和必填 `--mode gpu|loader|head`。
 
@@ -86,11 +92,9 @@ python scripts/train.py --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples
 
 **输出：** `artifacts/performance/<mode>_benchmark.json` 及终端统计。会做临时模型更新以测吞吐，但不保存或修改正式 checkpoint；同模式结果文件会覆盖。
 
-## 3. 评估与报告命令
-
 以下命令通过同一评估目录传递数据，记作 `EVAL_DIR`。
 
-### `evaluate.py`
+### `tests/evaluate.py`
 
 **输入：** `--checkpoint`，默认 `checkpoints/optimized/best_model.pt`；checkpoint 配置、匹配的原始数据、当前 `data/splits/{train,val,test}.json` 和编码器。当前是固定的全 test 评估，不支持任意 split；简单对照仅用 train 拟合。需要原有 CUDA/BF16 环境。
 
@@ -109,39 +113,46 @@ python scripts/train.py --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples
 
 可能创建或复用特征缓存。不会训练或修改 checkpoint。相同目录有协议一致性检查；重跑可能覆盖评估文件，新实验建议使用新目录。该命令**不生成 HTML**；图表和报告由 `render.py` 生成。
 
-### `render.py`
+### `tests/render.py`
 
 **输入：** `EVAL_DIR` 下的 protocol、metrics、episodes、predictions；配套图片和视频供 HTML 引用。
 
 **输出：** `index.html`、`trajectories/*.html`、`plots/*.png`、`overview.png`、`all_trajectories.png`、`intervention_events.png`；覆盖派生图表。重新制作图表只需 `render`，不用再次运行模型。报告页面直接引用 `videos/` 下的原始视频符号链接，因此这些链接必须保持可用。
 
 ```bash
-python scripts/evaluate.py --output artifacts/evaluation/new-run
-python scripts/render.py artifacts/evaluation/new-run
+python tests/evaluate.py --output artifacts/evaluation/new-run
+python tests/render.py artifacts/evaluation/new-run
 ```
 
 **绘图环境：** 已在 `value_function` 环境中验证 matplotlib 3.10.9。首次配置环境时安装可选绘图依赖；不再依赖系统 Python 的包：
 
 ```bash
 python -m pip install -r requirements-plotting.txt
-python scripts/render.py artifacts/evaluation/new-run
+python tests/render.py artifacts/evaluation/new-run
 ```
 
 matplotlib 只在 `render.py` 调用 `configure_plots()` 时导入，`evaluate.py` 不导入绘图库。绘图需要 NumPy 和 matplotlib，其他核心流程继续使用 `value_function` 环境。
 
 ## 完整流程
 
-使用 `run_all.sh` 按顺序执行所有步骤：
+使用 `run_train.sh` 和 `run_test.sh` 按顺序执行所有步骤：
 
 ```bash
-# 完整流程
-bash run_all.sh
+# 数据准备 + 训练
+bash run_train.sh
 
 # 冒烟测试模式
-bash run_all.sh --smoke_test
+bash run_train.sh --smoke_test
+
+# 测试 + 报告
+bash run_test.sh
+
+# 指定 checkpoint
+bash run_test.sh --checkpoint checkpoints/optimized/best_model.pt
 
 # 试运行（只显示将执行的步骤）
-bash run_all.sh --dry-run
+bash run_train.sh --dry-run
+bash run_test.sh --dry-run
 ```
 
 ## 环境注意事项：导入期崩溃
@@ -154,20 +165,20 @@ bash run_all.sh --dry-run
 
 ## 旧入口迁移
 
-旧脚本已移入 `scripts/`，不保留十个转发文件。历史实验报告中的命令作为溯源记录保留；重新执行时按下表替换，原参数保持可用。
+旧脚本已移入 `scripts/` 和 `tests/`，不保留十个转发文件。历史实验报告中的命令作为溯源记录保留；重新执行时按下表替换，原参数保持可用。
 
 | 旧脚本 | 新命令 |
 |---|---|
 | adapt_z02.py | `python scripts/prepare_data.py` |
 | train_value.py | `python scripts/train.py` |
-| benchmark_value.py | `python scripts/benchmark.py` |
-| verify_feature_cache.py | `python scripts/check_cache.py` |
-| evaluate_value.py | `python scripts/evaluate.py` |
-| render_value_evaluation.py | `python scripts/render.py` |
+| benchmark_value.py | `python tests/benchmark.py` |
+| verify_feature_cache.py | `python tests/check_cache.py` |
+| evaluate_value.py | `python tests/evaluate.py` |
+| render_value_evaluation.py | `python tests/render.py` |
 
 ## 目录整合
 
-2026-09-21 精简了目录布局，代码只保留 `scripts/` 和 `submodules/` 两处：
+2026-09-21 精简了目录布局，代码保留 `scripts/`、`tests/` 和 `submodules/` 三处：
 
 | 原位置 | 现位置 |
 |---|---|
