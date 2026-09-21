@@ -46,7 +46,7 @@ def main(argv=None):
     results=[]
     if args.mode=='gpu':
         # Historical first-patch/Gemma-allocation implementation, same GPU-resident input.
-        spec=importlib.util.spec_from_file_location('historical_training',output/'baseline/train_value.py')
+        spec=importlib.util.spec_from_file_location('historical_training',ROOT/'recap_value/reference/train_value.py')
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         model=module.ValueModel(str(ROOT/cfg['siglip_path']),str(ROOT/'models/gemma-3-270m'),True).cuda()
         baseline={**cfg,'precision':'fp32'}

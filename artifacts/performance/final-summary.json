@@ -1,9 +1,0 @@
-{
-  "epochs": 20,
-  "steps": 4840,
-  "best_epoch": 16,
-  "best_val_mse": 0.011607524007558823,
-  "training_seconds": 4.021332521000204,
-  "validation_seconds": 0.08336250499996822,
-  "checkpoint_bytes": 10883023
-}

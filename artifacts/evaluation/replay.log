@@ -1,7 +1,0 @@
-{
-  "replayed_frames": 34759,
-  "max_prediction_error": 0.0,
-  "targets_match_reward_formula": true,
-  "checkpoint_unchanged": true,
-  "recomputed_mse": 0.027464652202955624
-}

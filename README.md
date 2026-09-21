@@ -103,7 +103,7 @@ python scripts/recap.py value benchmark --mode head  # 需要已完成的全量 
 python scripts/recap.py value check-cache         # 比较缓存与在线编码，并检查已有 checkpoint
 ```
 
-`--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `artifacts/performance/baseline/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
+`--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `recap_value/reference/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
 
 ## 当前 checkpoint 独立测试
 
@@ -135,3 +135,7 @@ python scripts/recap.py report serve artifacts/evaluation/my-run --port 0
 - 重新生成 37 条轨迹的图表和 HTML，并验证报告首页、视频拖动接口及服务正常退出。
 
 本次验证没有重新执行全量训练或完整 `report evaluate`。冒烟结果分别放在 `artifacts/performance/cli-integration-smoke/` 和 `artifacts/evaluation/cli-integration-smoke/`，均不纳入版本控制。
+
+## 生成文件清理
+
+2026-09-21 已清理历史评估文件、试跑产物、日志和特征缓存；上文数值为历史验证记录，不表示这些产物仍在本地。原始数据、数据划分、回报标签、预训练权重和正式 checkpoint 保留。下一次训练会重新生成所需缓存；报告可按上述命令重建。`artifacts/` 不再纳入版本控制。

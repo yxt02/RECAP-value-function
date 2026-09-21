@@ -12,3 +12,6 @@ checkpoints/
 # Generated CLI integration smoke outputs (reproducible, not source).
 artifacts/evaluation/cli-integration-smoke/
 artifacts/performance/cli-integration-smoke/
+
+# Reproducible evaluation, benchmark, preview and smoke outputs.
+artifacts/

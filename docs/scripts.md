@@ -90,7 +90,7 @@ python scripts/recap.py value train --num_epochs 1 --max_steps 2 --val_steps 1 -
 
 - `loader`：测量原始数据读取，比较 worker 数量。
 - `head`：读取已建好的完整 train 缓存，测量回归头训练；需要 CUDA。
-- `gpu`：比较历史/当前视觉网络；还依赖 `artifacts/performance/baseline/train_value.py` 历史实现及相关权重，需要 CUDA。
+- `gpu`：比较历史/当前视觉网络；还依赖 `recap_value/reference/train_value.py` 历史实现及相关权重，需要 CUDA。
 
 **输出：** `artifacts/performance/<mode>_benchmark.json` 及终端统计。会做临时模型更新以测吞吐，但不保存或修改正式 checkpoint；同模式结果文件会覆盖。
 
@@ -172,3 +172,5 @@ python scripts/recap.py report render artifacts/evaluation/new-run
 - `report check`：独立重放 34,759 帧，预测最大差异 0，原 checkpoint 未变化。
 - `report render`：重新生成 37 张逐轨迹图和 37 个轨迹页面；HTTP 首页、真实 WebM 的 206 字节范围响应及 Ctrl+C 退出检查通过。
 - 评估验证输出位于 `artifacts/evaluation/cli-integration-smoke`；源评估输入复制或只读链接，原报告未覆盖。本次没有重新执行完整 `report evaluate` 推理或全量训练。
+
+> 2026-09-21 清理说明：上文记录的评估和冒烟产物及特征缓存已删除，验证记录保留。使用相关命令前须重新生成其输入产物。历史性能对照源码保留在 `recap_value/reference/`。
