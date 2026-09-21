@@ -1,25 +1,27 @@
 # 脚本入口与输入输出接口
 
-`scripts/value_function.py` 是本工程唯一的命令行入口。数据准备、训练及评估实现位于 `scripts/*_workflow.py`，按功能拆分以便测试和复用；无需安装 RLinf。
+所有操作通过独立脚本执行，每个脚本功能单一，互不重叠。数据准备、训练及评估实现位于 `scripts/*_workflow.py`，按功能拆分以便测试和复用；无需安装 RLinf。
 
-代码只放在两处：`scripts/` 存放命令行入口和三个工作流，`submodules/` 存放被它们复用的核心模块（模型、缓存、评估统计、特征加载、数据加载、共享合同）。`tests/` 为单元测试。数据集的加载与回报计算已并入这两处，不再有独立的 `recap_datasets/` 或 `process/` 目录。
+代码只放在两处：`scripts/` 存放独立脚本和三个工作流，`submodules/` 存放被它们复用的核心模块（模型、缓存、评估统计、特征加载、数据加载、共享合同）。`tests/` 为单元测试。
 
 ```bash
 conda activate value_function
 cd /home/zoyi/my_work/RECAP-value-function-main
-python scripts/value_function.py --help
-python scripts/value_function.py data --help
-python scripts/value_function.py value train --help
-python scripts/value_function.py report evaluate --help
+python scripts/prepare_data.py --help
+python scripts/train.py --help
+python scripts/benchmark.py --help
+python scripts/check_cache.py --help
+python scripts/evaluate.py --help
+python scripts/render.py --help
 ```
 
-所有相对输入和输出路径均相对**工程根目录**，也可传绝对路径；从其他目录调用时使用入口的绝对路径。每个工作流同时提供 `main(argv=None)` 路由和 `main_<command>(argv=None)` 子命令入口，传入字符串参数列表可供 Python 调用，不修改全局 `sys.argv`。训练的 `epoch`、`build_scheduler` 和数据准备的 `run` 仍可直接导入。
+所有相对输入和输出路径均相对**工程根目录**，也可传绝对路径；从其他目录调用时使用入口的绝对路径。
 
 执行成功退出码为 0；参数错误为 2；计算或文件错误返回非零且保留错误信息，不自动跳过。帮助页列出参数；下表定义产物和写入范围。
 
 ## 1. 数据命令
 
-### `data prepare`
+### `prepare_data.py`
 
 **输入：** `--config`，默认 `config/z02_data.yaml`。配置指定原始数据目录、数据集、22 维映射、结果覆盖规则、回报尺度、划分比例和输出目录。各数据集须包含 `data/**/episode_*.parquet`、`meta/info.json`、`meta/tasks.jsonl` 及所配置相机的视频。
 
@@ -36,23 +38,13 @@ python scripts/value_function.py report evaluate --help
 **回报文件接口：** 每行由 `(episode_index, frame_index)` 标识，包含 `return`、`reward`、`prompt`。跨数据集关联时必须加上数据集标识。归一化尺度和结果覆盖以配置及 sidecar 合同为准。
 
 ```bash
-python scripts/value_function.py data prepare --analyze
-python scripts/value_function.py data prepare --all --verify-videos
-```
-
-### `data survey`
-
-**输入：** 现有 `data/splits/*.json`、原始状态及可用评估产物。用于现有本地任务的同批次配对分析，不是任意数据集的通用配对 API。
-
-**输出：** `--output` 指定 JSON，默认 `artifacts/analysis/pairing_survey.json`，以及终端统计。只读源数据，不训练模型。结果包含样本清单、配对参数扫描和相关分析。
-
-```bash
-python scripts/value_function.py data survey --output artifacts/analysis/pairing_survey.json
+python scripts/prepare_data.py --analyze
+python scripts/prepare_data.py --all --verify-videos
 ```
 
 ## 2. 价值模型命令
 
-### `value train`
+### `train.py`
 
 **输入：** `--config`，默认 `config/train_value.yaml`；配置引用适配配置、划分、SigLIP 权重和训练参数。当前架构是冻结图像编码器加标量回归网络，不是完整多模态 RECAP critic。
 
@@ -73,18 +65,18 @@ python scripts/value_function.py data survey --output artifacts/analysis/pairing
 **checkpoint 接口：** format_version=2，architecture=`siglip_mean_patch_scalar`，包含模型参数、配置、优化器及训练状态等。冻结 SigLIP 权重通常不打包，重新从配置指定的模型目录加载。模型输入为相机图像字典或缓存特征，输出为 `[B, 1]` 的归一化价值，范围 `[-1, 0]`。
 
 ```bash
-python scripts/value_function.py value train --prepare-cache
-python scripts/value_function.py value train --smoke_test
-python scripts/value_function.py value train --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples 64 --save_dir artifacts/smoke/custom
+python scripts/train.py --prepare-cache
+python scripts/train.py --smoke_test
+python scripts/train.py --num_epochs 1 --max_steps 2 --val_steps 1 --max_samples 64 --save_dir artifacts/smoke/custom
 ```
 
-### `value check-cache`
+### `check_cache.py`
 
 **输入：** `--config`（默认训练配置）、匹配的完整 train 缓存、SigLIP 权重，以及配置保存目录中存在的 `best_model.pt`。需要 CUDA；缺少 checkpoint 时只检查缓存，结果明确记为 `not tested`。
 
 **输出：** `--output` 指定 JSON，默认 `artifacts/performance/cache-verification.json`。比较有界真实帧上的在线编码、缓存预测、标签及 checkpoint 重载。输入缓存或权重不被修改。
 
-### `value benchmark`
+### `benchmark.py`
 
 **输入：** `--config` 和必填 `--mode gpu|loader|head`。
 
@@ -98,7 +90,7 @@ python scripts/value_function.py value train --num_epochs 1 --max_steps 2 --val_
 
 以下命令通过同一评估目录传递数据，记作 `EVAL_DIR`。
 
-### `report evaluate`
+### `evaluate.py`
 
 **输入：** `--checkpoint`，默认 `checkpoints/optimized/best_model.pt`；checkpoint 配置、匹配的原始数据、当前 `data/splits/{train,val,test}.json` 和编码器。当前是固定的全 test 评估，不支持任意 split；简单对照仅用 train 拟合。需要原有 CUDA/BF16 环境。
 
@@ -115,27 +107,42 @@ python scripts/value_function.py value train --num_epochs 1 --max_steps 2 --val_
 | `storyboards/` | 各轨迹关键帧图片 |
 | `videos/` | 原始视频的符号链接；迁移报告时须保证链接目标可用 |
 
-可能创建或复用特征缓存。不会训练或修改 checkpoint。相同目录有协议一致性检查；重跑可能覆盖评估文件，新实验建议使用新目录。该命令**不生成 HTML**；图表和报告由 `report render` 生成。
+可能创建或复用特征缓存。不会训练或修改 checkpoint。相同目录有协议一致性检查；重跑可能覆盖评估文件，新实验建议使用新目录。该命令**不生成 HTML**；图表和报告由 `render.py` 生成。
 
-### `report render`
+### `render.py`
 
 **输入：** `EVAL_DIR` 下的 protocol、metrics、episodes、predictions；配套图片和视频供 HTML 引用。
 
 **输出：** `index.html`、`trajectories/*.html`、`plots/*.png`、`overview.png`、`all_trajectories.png`、`intervention_events.png`；覆盖派生图表。重新制作图表只需 `render`，不用再次运行模型。报告页面直接引用 `videos/` 下的原始视频符号链接，因此这些链接必须保持可用。
 
 ```bash
-python scripts/value_function.py report evaluate --output artifacts/evaluation/new-run
-python scripts/value_function.py report render artifacts/evaluation/new-run
+python scripts/evaluate.py --output artifacts/evaluation/new-run
+python scripts/render.py artifacts/evaluation/new-run
 ```
 
 **绘图环境：** 已在 `value_function` 环境中验证 matplotlib 3.10.9。首次配置环境时安装可选绘图依赖；不再依赖系统 Python 的包：
 
 ```bash
 python -m pip install -r requirements-plotting.txt
-python scripts/value_function.py report render artifacts/evaluation/new-run
+python scripts/render.py artifacts/evaluation/new-run
 ```
 
-入口按命令延迟导入模块，因此 `report` 命令不会加载训练工作流。matplotlib 只在 `report render` 调用 `configure_plots()` 时导入，`evaluate` 不导入绘图库。绘图需要 NumPy 和 matplotlib，其他核心流程继续使用 `value_function` 环境。
+matplotlib 只在 `render.py` 调用 `configure_plots()` 时导入，`evaluate.py` 不导入绘图库。绘图需要 NumPy 和 matplotlib，其他核心流程继续使用 `value_function` 环境。
+
+## 完整流程
+
+使用 `run_all.sh` 按顺序执行所有步骤：
+
+```bash
+# 完整流程
+bash run_all.sh
+
+# 冒烟测试模式
+bash run_all.sh --smoke_test
+
+# 试运行（只显示将执行的步骤）
+bash run_all.sh --dry-run
+```
 
 ## 环境注意事项：导入期崩溃
 
@@ -149,17 +156,14 @@ python scripts/value_function.py report render artifacts/evaluation/new-run
 
 旧脚本已移入 `scripts/`，不保留十个转发文件。历史实验报告中的命令作为溯源记录保留；重新执行时按下表替换，原参数保持可用。
 
-| 旧脚本 | 新命令（前缀均为 `python scripts/value_function.py`） |
+| 旧脚本 | 新命令 |
 |---|---|
-| adapt_z02.py | `data prepare` |
-| survey_pairing.py | `data survey` |
-| train_value.py | `value train` |
-| benchmark_value.py | `value benchmark` |
-| verify_feature_cache.py | `value check-cache` |
-| evaluate_value.py | `report evaluate` |
-| render_value_evaluation.py | `report render` |
-
-`check_value_evaluation.py`、`prepare_evaluation_videos.py` 和 `serve_value_evaluation.py` 的独立重放、视频转码和本地服务功能已删除；报告页面直接引用原始视频，用任意静态文件服务即可浏览。后续优势评分和标签生成功能可在此入口增加子命令；本次只整理已有功能，不将尚未实现的优势标注描述为已完成。
+| adapt_z02.py | `python scripts/prepare_data.py` |
+| train_value.py | `python scripts/train.py` |
+| benchmark_value.py | `python scripts/benchmark.py` |
+| verify_feature_cache.py | `python scripts/check_cache.py` |
+| evaluate_value.py | `python scripts/evaluate.py` |
+| render_value_evaluation.py | `python scripts/render.py` |
 
 ## 目录整合
 
@@ -169,17 +173,15 @@ python scripts/value_function.py report render artifacts/evaluation/new-run
 |---|---|
 | `recap_datasets/recap/contracts.py` | `submodules/contracts.py` |
 | `recap_datasets/recap/simple_dataset.py` | `submodules/datasets.py` |
-| `process/compute_returns.py` | 已删除；回报计算由 `data prepare --compute_returns` 完成 |
-
-`recap_datasets/` 其余文件（`value_dataset.py`、`common.py`、`utils.py`、`loader.py`）及 `config/recap_value_model_sft_z02.yaml`、`config/model/recap_value_model.yaml` 只被彼此引用，已一并删除。合并目标选在 `submodules/` 而不是平铺进 `scripts/`，是因为 `datasets` 与已安装的 `site-packages/datasets` 同名，平铺会造成导入歧义。核心模块的相对导入保持不变，功能未变。
+| `process/compute_returns.py` | 已删除；回报计算由 `prepare_data.py --compute_returns` 完成 |
 
 ## 本次整合验证（2026-09-21）
 
 - `python -m unittest discover -s tests -v`：21 项通过，包括旧训练/数据测试与新入口路由、错误传播和跨目录调用。
-- 目录整合与导入稳定性修复后，完整测试连续 39 次全部通过（修复前 12 次中失败 3 次，原因见上文“环境注意事项”）；单模块、入口各路由和三个工作流直接调用也各自连续 25–60 次无失败。
-- `data prepare --analyze`：4 批真实数据只读检查通过。
-- `value train --smoke_test`：256 个真实训练样本、4 次优化器更新、2 个验证批次，cache/online 两条路径均通过有限梯度与参数更新检查。
-- `report render`：重新生成 37 张逐轨迹图和 37 个轨迹页面，报告首页可正常打开。
-- 评估验证输出位于 `artifacts/evaluation/cli-integration-smoke`；源评估输入复制或只读链接，原报告未覆盖。本次没有重新执行完整 `report evaluate` 推理或全量训练。
+- 目录整合与导入稳定性修复后，完整测试连续 39 次全部通过（修复前 12 次中失败 3 次，原因见上文"环境注意事项"）；单模块、入口各路由和三个工作流直接调用也各自连续 25–60 次无失败。
+- `prepare_data.py --analyze`：4 批真实数据只读检查通过。
+- `train.py --smoke_test`：256 个真实训练样本、4 次优化器更新、2 个验证批次，cache/online 两条路径均通过有限梯度与参数更新检查。
+- `render.py`：重新生成 37 张逐轨迹图和 37 个轨迹页面，报告首页可正常打开。
+- 评估验证输出位于 `artifacts/evaluation/cli-integration-smoke`；源评估输入复制或只读链接，原报告未覆盖。本次没有重新执行完整评估推理或全量训练。
 
 > 2026-09-21 清理说明：上文记录的评估和冒烟产物及特征缓存已删除，验证记录保留。使用相关命令前须重新生成其输入产物。历史性能对照源码保留在 `submodules/reference/`。

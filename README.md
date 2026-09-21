@@ -4,32 +4,37 @@
 
 当前模型冻结 SigLIP2，对各相机的图像分块特征取平均，再训练标量回归网络，输出范围为 `[-1, 0]`。它是视觉价值基线，尚不是带语言条件和 201 档价值分布的完整 RECAP critic。
 
-## 功能与统一入口
+## 功能与独立脚本
 
-所有操作通过 `python scripts/value_function.py <组> <命令>` 执行，原来的 10 个独立脚本已合并为这一个入口，各命令按需加载依赖。
+所有操作通过独立脚本执行，每个脚本功能单一，互不重叠：
 
-目录结构只保留两个代码位置：
+| 脚本 | 功能 | 主要输入 → 输出 |
+|---|---|---|
+| `scripts/prepare_data.py` | 数据审计、回报计算、轨迹划分 | 原始数据与适配配置 → 回报标签、轨迹划分 |
+| `scripts/train.py` | 训练价值模型 | 训练配置、数据、视觉权重 → 特征缓存、checkpoint |
+| `scripts/benchmark.py` | 性能测试 | 训练配置 → GPU/加载器/缓存头吞吐量记录 |
+| `scripts/check_cache.py` | 缓存一致性验证 | 训练配置、缓存、checkpoint → 验证报告 |
+| `scripts/evaluate.py` | 全测试集评估 | checkpoint → 预测数组、指标 |
+| `scripts/render.py` | 报告渲染 | 评估结果 → 图表、HTML 报告 |
+
+另有 `run_all.sh` 按顺序执行完整流程（数据准备 → 训练 → 评估 → 报告）。
+
+目录结构：
 
 | 目录 | 内容 |
 |---|---|
-| `scripts/` | 命令行入口 `value_function.py` 和三个工作流 `data_workflow.py`、`training_workflow.py`、`evaluation_workflow.py` |
+| `scripts/` | 独立命令行脚本和三个工作流 `data_workflow.py`、`training_workflow.py`、`evaluation_workflow.py` |
 | `submodules/` | 被工作流复用的核心模块：模型、缓存、评估统计、特征加载、数据加载与共享合同 |
 
-数据集加载与处理脚本（回报计算）已并入上述两处：共享合同在 `submodules/contracts.py`，数据加载在 `submodules/datasets.py`，回报计算在 `data_workflow.py`。`tests/` 保持独立。
-
-| 命令组 | 子命令 | 主要输入 → 输出 |
-|---|---|---|
-| `data` | `prepare` | 原始数据与适配配置 → 回报标签、轨迹划分 |
-| `value` | `train`、`check-cache`、`benchmark` | 训练配置、数据、视觉权重 → 特征缓存、checkpoint、验证或性能记录 |
-| `report` | `evaluate`、`render` | checkpoint 或已有评估结果 → 预测数组、指标、图表、HTML 报告 |
-
-完整参数、输入输出字段、写入范围、环境要求和旧命令迁移表见 **[脚本接口文档](docs/scripts.md)**。相对文件路径均按工程根目录解析；从其他目录调用时，使用入口的绝对路径。
+完整参数、输入输出字段、写入范围、环境要求见 **[脚本接口文档](docs/scripts.md)**。相对文件路径均按工程根目录解析；从其他目录调用时，使用入口的绝对路径。
 
 ```bash
-python scripts/value_function.py --help
-python scripts/value_function.py data --help
-python scripts/value_function.py value train --help
-python scripts/value_function.py report evaluate --help
+python scripts/prepare_data.py --help
+python scripts/train.py --help
+python scripts/benchmark.py --help
+python scripts/check_cache.py --help
+python scripts/evaluate.py --help
+python scripts/render.py --help
 ```
 
 已完成：数据适配、回报计算、价值训练、独立测试、时序诊断和逐轨迹可视化。
@@ -47,10 +52,18 @@ python scripts/value_function.py report evaluate --help
 ```bash
 cd /home/zoyi/my_work/RECAP-value-function-main
 conda activate value_function
-python scripts/value_function.py data prepare --analyze
-python scripts/value_function.py value train --smoke_test
+
+# 数据检查
+python scripts/prepare_data.py --analyze
+
+# 冒烟测试
+python scripts/train.py --smoke_test
+
 # 正式训练（会写入配置指定的保存目录）
-python scripts/value_function.py value train
+python scripts/train.py
+
+# 完整流程（数据准备 → 训练 → 评估 → 报告）
+bash run_all.sh
 ```
 
 需要生成图表时，在同一环境安装可选绘图依赖：
@@ -66,7 +79,7 @@ python -m pip install -r requirements-plotting.txt
 默认首次运行会完整缓存 train/val 的冻结视觉特征，然后训练回归头。后续运行校验缓存后直接训练。可提前生成缓存：
 
 ```bash
-python scripts/value_function.py value train --prepare-cache
+python scripts/train.py --prepare-cache
 ```
 
 缓存位于 `data/cache/value_features_v1/`，目录名包含内容指纹；单 camera 的完整 train/val 特征约 0.60 GiB。特征以 FP16 存储；冻结模型的在线图片推理也应用相同的特征精度，保持与缓存训练路径一致。指纹覆盖模型权重、processor、预处理、相机顺序、数据文件时间/大小、frame 顺序、return 标签和计算精度。缓存文件带 SHA256 校验，生成完成前不会被训练读取。修改 return 后必须重新适配以更新 sidecar 合同。当前没有随机图像增强，且 encoder 冻结，才能跨 epoch 复用这些特征。
@@ -74,7 +87,7 @@ python scripts/value_function.py value train --prepare-cache
 默认把小体积的特征放进显存，GPU 内存紧张时退回 CPU。无需为已缓存特征设置大量 worker；多 worker 用于首次视频解码。若关闭缓存，仍可走原始图像训练：
 
 ```bash
-python scripts/value_function.py value train --no-cache --smoke_test
+python scripts/train.py --no-cache --smoke_test
 ```
 
 ## 训练预算
@@ -104,16 +117,16 @@ python scripts/value_function.py value train --no-cache --smoke_test
 新增或修改原始数据后运行：
 
 ```bash
-python scripts/value_function.py data prepare --config config/z02_data.yaml --all
+python scripts/prepare_data.py --config config/z02_data.yaml --all
 ```
 
 ## 验证与性能复测
 
 ```bash
 python -m unittest discover -s tests -v
-python scripts/value_function.py value benchmark --mode loader
-python scripts/value_function.py value benchmark --mode head  # 需要已完成的全量 train 缓存
-python scripts/value_function.py value check-cache         # 比较缓存与在线编码，并检查已有 checkpoint
+python scripts/benchmark.py --mode loader
+python scripts/benchmark.py --mode head  # 需要已完成的全量 train 缓存
+python scripts/check_cache.py           # 比较缓存与在线编码，并检查已有 checkpoint
 ```
 
 `--mode gpu` 比较本次优化前的本机脚本快照和当前模型，需保留 `submodules/reference/train_value.py`。性能日志和测试产物位于 `artifacts/performance/`。详细测量范围、配置选择依据和训练结果见 `docs/performance.md`。
@@ -127,13 +140,28 @@ python scripts/value_function.py value check-cache         # 比较缓存与在�
 以下示例使用一个新的评估目录。`evaluate` 会评估完整测试集并写入预测数组；仅重新绘图时直接运行 `render`，无需重新推理。
 
 ```bash
-python scripts/value_function.py report evaluate --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
-python scripts/value_function.py report render artifacts/evaluation/my-run
+python scripts/evaluate.py --checkpoint checkpoints/optimized/best_model.pt --output artifacts/evaluation/my-run
+python scripts/render.py artifacts/evaluation/my-run
 ```
 
 评估目录中的 `predictions.npz` 保存逐帧数组，`episodes.json` 保存轨迹及其数组区间，`metrics.json` 保存统计，`protocol.json` 保存评估约定。报告入口为 `index.html`，用任意静态文件服务打开即可。
 
 评估目前使用原 CUDA/BF16 环境；绘图不需要加载模型。命令可能覆盖目标目录中的同名派生产物，独立实验应使用新的输出目录。
+
+## 完整流程
+
+使用 `run_all.sh` 按顺序执行所有步骤：
+
+```bash
+# 完整流程
+bash run_all.sh
+
+# 冒烟测试模式
+bash run_all.sh --smoke_test
+
+# 试运行（只显示将执行的步骤）
+bash run_all.sh --dry-run
+```
 
 ## 本次入口整合验证
 
@@ -143,7 +171,7 @@ python scripts/value_function.py report render artifacts/evaluation/my-run
 - 4 批真实数据只读检查通过；64 个训练样本完成 2 次真实更新及一次验证批次，并保存独立冒烟 checkpoint。
 - 重新生成 37 条轨迹的图表和 HTML，并验证报告首页可正常打开。
 
-本次验证没有重新执行全量训练或完整 `report evaluate`。冒烟结果分别放在 `artifacts/performance/cli-integration-smoke/` 和 `artifacts/evaluation/cli-integration-smoke/`，均不纳入版本控制。
+本次验证没有重新执行全量训练或完整评估。冒烟结果分别放在 `artifacts/performance/cli-integration-smoke/` 和 `artifacts/evaluation/cli-integration-smoke/`，均不纳入版本控制。
 
 ## 生成文件清理
 

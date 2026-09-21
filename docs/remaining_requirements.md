@@ -32,7 +32,7 @@
 | 特征缓存与加载 | 代码可用，缓存文件已清理 | 按所选轨迹重建或复用身份匹配的缓存 |
 | 逐帧评估和轨迹报告 | 代码可用，历史输出已清理 | 抽取公共推理与渲染逻辑，不依赖被删除的产物 |
 | 多跨度时序诊断 | 已有部分计算 | `submodules/evaluation.py:temporal_metrics`，目前是排除终止转移的诊断，不是完整优势标注 |
-| 统一命令入口 | 已完成 | `scripts/value_function.py`，现有命令见 [接口文档](scripts.md) |
+| 独立脚本入口 | 已完成 | `scripts/prepare_data.py`、`scripts/train.py` 等，详见 [接口文档](scripts.md) |
 
 现有有效轨迹共 327 条：train 260、val 30、test 37。失败批次 `2026.09.16_error` 的 100 条轨迹均按失败处理，必须沿用合同中的结果覆盖，不能重新用错误的原始终帧奖励判断结局。
 
@@ -150,20 +150,20 @@ values 唯一键为 `(dataset_id, episode_index, frame_index)`；scores 再加 h
 
 ### 拟定命令接口（尚未实现）
 
-保持一个脚本入口，不恢复多个独立脚本。新增 `advantage` 命令组：
+使用独立脚本，不恢复统一入口。新增 `scripts/advantage.py` 脚本：
 
 ```bash
 # 配置完整定义 checkpoint、数据选择、跨度、尺度校验及标签规则
-python scripts/value_function.py advantage run --config config/advantage.yaml --output artifacts/advantage/demo
+python scripts/advantage.py run --config config/advantage.yaml --output artifacts/advantage/demo
 
 # 只改变阈值，复用已生成的 scores；分位数需配置参考集
-python scripts/value_function.py advantage relabel --input artifacts/advantage/demo --config config/labels.yaml --output artifacts/advantage/demo-labels
+python scripts/advantage.py relabel --input artifacts/advantage/demo --config config/labels.yaml --output artifacts/advantage/demo-labels
 
 # 从计算结果生成或刷新报告，不调用模型
-python scripts/value_function.py advantage render --input artifacts/advantage/demo
+python scripts/advantage.py render --input artifacts/advantage/demo
 
 # 重新检查输出完整性与计算一致性，失败返回非零
-python scripts/value_function.py advantage check --input artifacts/advantage/demo
+python scripts/advantage.py check --input artifacts/advantage/demo
 ```
 
 生成的报告页面用任意静态文件服务打开即可浏览。

@@ -1,62 +1,68 @@
-"""Public contract tests for the command router. Run with unittest discover -s tests -v."""
-import contextlib
-import io
-from pathlib import Path
+"""Public contract tests for the independent scripts. Run with unittest discover -s tests -v."""
 import subprocess
 import sys
+from pathlib import Path
 import unittest
-from unittest.mock import Mock, patch
-
-from submodules import cli
 
 ROOT = Path(__file__).resolve().parents[1]
 
+SCRIPTS = [
+    'prepare_data.py',
+    'train.py',
+    'benchmark.py',
+    'check_cache.py',
+    'evaluate.py',
+    'render.py',
+]
 
-class CliTests(unittest.TestCase):
-    def test_each_route_forwards_arguments_without_mutating_argv(self):
-        """Every route imports its module, calls its entry point with argv[2:] and leaves sys.argv alone."""
-        for group, commands in cli.COMMANDS.items():
-            for command, (module_name, _) in commands.items():
-                workflow = Mock()
-                func_mock = Mock(return_value='done')
-                setattr(workflow, cli.function_name(command), func_mock)
 
-                before = list(sys.argv)
-                with patch.object(cli.importlib, 'import_module', return_value=workflow) as load:
-                    self.assertEqual(cli.main([group, command, '--help']), 'done')
-                load.assert_called_once_with(module_name)
-                func_mock.assert_called_once_with(['--help'])
-                self.assertEqual(sys.argv, before)
+class ScriptTests(unittest.TestCase):
+    """Test that each script shows help without crashing."""
 
-    def test_invalid_route_and_help_do_not_load_model_dependencies(self):
-        for args, status in [([], 2), (['value', 'missing'], 2), (['--help'], 0), (['report', '--help'], 0)]:
-            with patch.object(cli.importlib, 'import_module') as load, \
-                 contextlib.redirect_stdout(io.StringIO()), \
-                 contextlib.redirect_stderr(io.StringIO()):
-                with self.assertRaises(SystemExit) as exc:
-                    cli.main(args)
-                self.assertEqual(exc.exception.code, status)
-                load.assert_not_called()
+    def test_help_flag(self):
+        """Each script should show help and exit 0."""
+        for script in SCRIPTS:
+            with self.subTest(script=script):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / 'scripts' / script), '--help'],
+                    cwd=str(ROOT),
+                    text=True,
+                    capture_output=True
+                )
+                self.assertEqual(result.returncode, 0,
+                                 f'{script} --help failed: {result.stderr}')
+                self.assertTrue(len(result.stdout) > 0,
+                                f'{script} --help produced no output')
 
-    def test_absolute_entrypoint_runs_outside_project(self):
-        """The absolute-path entry point works from another cwd and reaches the workflow's own parser."""
+    def test_benchmark_requires_mode(self):
+        """benchmark.py should fail without --mode."""
         result = subprocess.run(
-            [sys.executable, str(ROOT / 'scripts' / 'value_function.py'), 'report', 'render', '--help'],
-            cwd='/tmp',
+            [sys.executable, str(ROOT / 'scripts' / 'benchmark.py')],
+            cwd=str(ROOT),
             text=True,
             capture_output=True
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('evaluation directory path', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
 
-    def test_workflow_failure_is_not_reported_as_success(self):
-        workflow = Mock()
-        func_mock = Mock(side_effect=ValueError('invalid input'))
-        setattr(workflow, cli.function_name('render'), func_mock)
+    def test_render_requires_output(self):
+        """render.py should fail without output argument."""
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts' / 'render.py')],
+            cwd=str(ROOT),
+            text=True,
+            capture_output=True
+        )
+        self.assertNotEqual(result.returncode, 0)
 
-        with patch.object(cli.importlib, 'import_module', return_value=workflow):
-            with self.assertRaisesRegex(ValueError, 'invalid input'):
-                cli.main(['report', 'render', 'missing'])
+    def test_prepare_data_no_args_shows_help(self):
+        """prepare_data.py without args should show help."""
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts' / 'prepare_data.py')],
+            cwd=str(ROOT),
+            text=True,
+            capture_output=True
+        )
+        self.assertEqual(result.returncode, 0)
 
 
 if __name__ == '__main__':

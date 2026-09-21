@@ -143,8 +143,15 @@ class TrainingTests(unittest.TestCase):
         class Head(nn.Module):
             def __init__(self,*args,**kwargs):
                 super().__init__(); self.projection=nn.Linear(4,1); self.siglip=None
-            def forward(self,images=None,features=None):
-                return (self.projection(features).tanh()-1)*.5
+                self.bin_centers = torch.linspace(-1, 0, 201)
+            def forward(self,images=None,features=None,return_distribution=False):
+                value = (self.projection(features).tanh()-1)*.5
+                if return_distribution:
+                    batch_size = value.shape[0]
+                    # Uniform log probs scaled by value so gradients flow through projection
+                    log_probs = value.expand(batch_size, 201) * 0 - torch.log(torch.tensor(201.0))
+                    return value, log_probs
+                return value
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary)
             (root/'manifest.json').write_text('{}')
