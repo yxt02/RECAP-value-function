@@ -44,12 +44,13 @@ label = advantage if A[t] > threshold else disadvantage
 |---|---|
 | `values.parquet` | 每帧一行：dataset_id、episode_index、frame_index 唯一键；timestamp（秒）、fps、split、success、reward_raw、intervention（缺失为 NaN）、value |
 | `scores.parquet` | 每帧每个 horizon 一行：唯一键与时间、split、success、intervention、value，以及 horizon、effective_horizon、reward_sum_raw（已折扣）、value_next、terminal_reached、advantage_continuous、threshold、label、is_advantage |
+| `advantages.parquet` | timestep-level RECAP metadata，`scores.parquet` 的瘦投影：唯一键与时间、split、horizon、threshold、advantage_continuous、advantage（bool）。供训练侧 dataloader 按 (dataset_id, episode_index, frame_index[, horizon]) 查表附 label；与 scores 同行数，不修改原始数据 |
 | `episodes.json` | 每轨迹/前瞻长度：帧数、平均价值、平均优势、优势标签比例、接管/非接管帧均值、完整接管窗口数 |
 | `interventions.json` | 按前瞻长度记录接管起点前后 ±1 秒，61 个插值点、事件数与事件等权均值；无事件则 mean=null |
 | `plots/*.png` | 每轨迹三行折线图：价值、多步优势及阈值、接管标记 |
 | `interventions.png` / `index.html` | 接管起点汇总图与可展开逐轨迹报告 |
 | `manifest.json` | checkpoint SHA256、配置、划分文件哈希、缓存身份、尺度、阈值、输出文件校验及完成状态 |
-| `validation.json` | 帧数、轨迹数、评分行数、唯一性与有限值检查；model_quality_validated=false |
+| `validation.json` | 帧数、轨迹数、评分行数、advantages 行数、唯一性与有限值检查；model_quality_validated=false |
 
 仅 `manifest.status=complete` 表示完成；异常退出时留下的目录不应当作有效输出。复用结果校验 values.parquet 的哈希。PNG 只是展示，机器处理以 parquet 为准。
 

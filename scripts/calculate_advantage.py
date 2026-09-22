@@ -37,7 +37,7 @@ def main(argv=None):
     import torch
     from torch.utils.data import Subset
     from omegaconf import OmegaConf
-    from submodules.advantage import compute_advantage, label_scores, intervention_windows
+    from submodules.advantage import compute_advantage, label_scores, intervention_windows, export_advantage_table
     from submodules.cache import prepare_features, cache_location, cache_identity, sha256
     from submodules.checkpoint import distribution_bins
     from submodules.contracts import resolve_path, episode_returns
@@ -209,6 +209,7 @@ def main(argv=None):
         fig.tight_layout();name=f'episode-{len(links):04d}.png';fig.savefig(output/'plots'/name,dpi=120);plt.close(fig)
         links.append((f'{dataset}:{ep}',name))
     scores=pd.concat(score_frames,ignore_index=True);scores.to_parquet(output/'scores.parquet',index=False)
+    advantages=export_advantage_table(scores);advantages.to_parquet(output/'advantages.parquet',index=False)
     dump(output/'episodes.json',summaries)
     event_report={};fig,ax=plt.subplots(figsize=(10,4))
     for horizon,rows in events.items():
@@ -226,6 +227,7 @@ def main(argv=None):
     if not np.isfinite(scores.advantage_continuous).all():
         raise ValueError('Non-finite exported scores')
     dump(output/'validation.json',dict(status='passed',frames=len(values),episodes=len(links),score_rows=len(scores),
+        advantage_table_rows=len(advantages),
         unique_frame_keys=True,finite_scores=bool(np.isfinite(scores.advantage_continuous).all()),model_quality_validated=False))
     manifest['status']='complete';manifest['files_sha256']={p.name:sha256(p) for p in output.iterdir() if p.is_file() and p.name!='manifest.json'}
     dump(output/'manifest.json',manifest)

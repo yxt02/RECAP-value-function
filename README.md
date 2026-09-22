@@ -40,7 +40,7 @@ submodules/           # 核心模块 + 工具 + 工作流
 |---|---|
 | `scripts/prepare_data.py` | 数据审计、回报计算、轨迹划分 |
 | `scripts/train.py` | 模型训练 |
-| `scripts/calculate_advantage.py` | 价值推理、多步优势、条件标签、逐轨迹图表 |
+| `scripts/calculate_advantage.py` | 价值推理、多步优势、条件标签、advantages.parquet 导出、逐轨迹图表 |
 
 ### 工具脚本（位于 submodules/）
 
@@ -71,7 +71,7 @@ python submodules/render.py --help
 
 已完成：数据适配、回报计算、价值训练、独立测试、时序诊断和逐轨迹可视化。
 
-已实现：逐帧 advantage/disadvantage 标签导出、多前瞻长度曲线、固定阈值调整及接管前后对比。输出是模型评分；π 策略训练与动作生成不在当前实现中。
+已实现：逐帧 advantage/disadvantage 标签导出、timestep-level RECAP metadata（`advantages.parquet`）、多前瞻长度曲线、固定阈值调整及接管前后对比。输出是模型评分；π 策略训练与动作生成不在当前实现中。
 
 ## 下一阶段需求
 
@@ -233,6 +233,6 @@ python scripts/calculate_advantage.py --reuse-values artifacts/advantage/my-test
   --horizon 1 10 50 --threshold 0.01 --output artifacts/advantage/my-comparison
 ```
 
-打开输出目录的 `index.html`。逐帧价值、优势及标签分别见 `values.parquet`、`scores.parquet`。普通非终止窗口中，50 帧优势为 `V(t+50) - V(t) - 50/4000`；接近轨迹末尾时按实际剩余帧数及终止奖励计算，失败惩罚不会丢弃。完整字段与边界定义见 [接口说明](docs/advantage.md)。
+打开输出目录的 `index.html`。逐帧价值、优势及标签分别见 `values.parquet`、`scores.parquet`；训练侧查表用的 timestep-level 元数据见 `advantages.parquet`。普通非终止窗口中，50 帧优势为 `V(t+50) - V(t) - 50/4000`；接近轨迹末尾时按实际剩余帧数及终止奖励计算，失败惩罚不会丢弃。完整字段与边界定义见 [接口说明](docs/advantage.md)。
 
 本次优势脚本验收已完整运行 327 条轨迹 / 310,031 帧，并单独运行完整 test 的 37 条轨迹 / 34,759 帧。29 项单元测试通过；缓存已重建，详细结果见 [重构审阅与验收](docs/refactor_review.md)。

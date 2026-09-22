@@ -202,4 +202,4 @@ bash run_test.sh --dry-run
 
 ## 优势计算入口
 
-新增 `python scripts/calculate_advantage.py`，默认完整测试集、50 帧前瞻、固定阈值 0。输入输出及所有参数见 [优势计算说明](advantage.md)。
+新增 `python scripts/calculate_advantage.py`，默认完整测试集、50 帧前瞻、固定阈值 0，并导出 timestep-level RECAP metadata（`advantages.parquet`）供训练侧按帧查 advantage label。输入输出及所有参数见 [优势计算说明](advantage.md)。

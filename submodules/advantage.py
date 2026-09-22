@@ -1,5 +1,10 @@
 """Trajectory-local N-step scores; rewards and values share one return scale."""
 import numpy as np
+import pandas as pd
+
+ADVANTAGE_TABLE_COLUMNS = ['dataset_id', 'episode_index', 'frame_index', 'timestamp',
+                           'split', 'horizon', 'threshold', 'advantage_continuous', 'advantage']
+ADVANTAGE_TABLE_KEYS = ['dataset_id', 'episode_index', 'frame_index', 'horizon']
 
 
 def compute_advantage(values, rewards, horizon=50, scale=4000., gamma=1.):
@@ -32,6 +37,35 @@ def label_scores(scores, threshold=0.):
     if not np.isfinite(scores).all() or not np.isfinite(threshold):
         raise ValueError('Non-finite scores/threshold')
     return np.where(scores > threshold, 'advantage', 'disadvantage')
+
+
+def export_advantage_table(scores):
+    """Project scored frames into timestep-level RECAP metadata; never mutates input."""
+    if not isinstance(scores, pd.DataFrame):
+        raise ValueError('scores must be a pandas DataFrame')
+    required = set(ADVANTAGE_TABLE_KEYS) | {'timestamp', 'split', 'threshold',
+                                            'advantage_continuous', 'is_advantage'}
+    missing = sorted(required - set(scores.columns))
+    if missing:
+        raise ValueError(f'Missing scores columns: {missing}')
+    if len(scores) == 0:
+        raise ValueError('Cannot export an empty scores table')
+    if scores.duplicated(ADVANTAGE_TABLE_KEYS).any():
+        raise ValueError('Duplicate frame/horizon keys in scores')
+    continuous = pd.to_numeric(scores['advantage_continuous'], errors='coerce').to_numpy(float)
+    threshold = pd.to_numeric(scores['threshold'], errors='coerce').to_numpy(float)
+    if not np.isfinite(continuous).all() or not np.isfinite(threshold).all():
+        raise ValueError('Non-finite advantage_continuous/threshold')
+    if not np.isfinite(pd.to_numeric(scores['timestamp'], errors='coerce')).all():
+        raise ValueError('Non-finite timestamps')
+    if not scores['is_advantage'].isin([True, False, 0, 1]).all():
+        raise ValueError('is_advantage must be boolean')
+    advantage = scores['is_advantage'].astype(bool).to_numpy()
+    if not np.array_equal(advantage, continuous > threshold):
+        raise ValueError('is_advantage disagrees with advantage_continuous > threshold')
+    table = scores[[c for c in ADVANTAGE_TABLE_COLUMNS if c != 'advantage']].copy()
+    table['advantage'] = advantage
+    return table.sort_values(ADVANTAGE_TABLE_KEYS, kind='mergesort').reset_index(drop=True)
 
 
 def intervention_windows(times, scores, flags, window_seconds=1., points=61):
