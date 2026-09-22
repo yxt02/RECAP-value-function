@@ -3,8 +3,12 @@ import numpy as np
 import pandas as pd
 
 ADVANTAGE_TABLE_COLUMNS = ['dataset_id', 'episode_index', 'frame_index', 'timestamp',
-                           'split', 'horizon', 'threshold', 'advantage_continuous', 'advantage']
+                           'split', 'horizon', 'threshold', 'advantage_continuous',
+                           'advantage', 'advantage_forced']
 ADVANTAGE_TABLE_KEYS = ['dataset_id', 'episode_index', 'frame_index', 'horizon']
+
+# RECAP binarizes advantage with a task-level threshold and forces corrections positive.
+DEFAULT_PERCENTILE = 30.
 
 
 def compute_advantage(values, rewards, horizon=50, scale=4000., gamma=1.):
@@ -39,12 +43,57 @@ def label_scores(scores, threshold=0.):
     return np.where(scores > threshold, 'advantage', 'disadvantage')
 
 
+def value_percentile_threshold(values, percentile=DEFAULT_PERCENTILE):
+    """Task-level improvement threshold epsilon, taken from predicted values.
+
+    Mirrors the RECAP rule: epsilon is the configured percentile of the value
+    function's own predictions for the task, so the cut adapts per task instead
+    of being a fixed number. Multi-task runs must call this once per task.
+    """
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 1 or len(values) == 0:
+        raise ValueError('Expected a nonempty 1-D value array')
+    if not np.isfinite(values).all():
+        raise ValueError('Non-finite values')
+    if not np.isfinite(percentile) or not 0. <= percentile <= 100.:
+        raise ValueError('percentile must lie in [0, 100]')
+    return float(np.percentile(values, percentile, method='linear'))
+
+
+def label_improvement(advantages, threshold, intervention=None):
+    """Binarized improvement indicator and the frames forced positive.
+
+    I = 1[A > threshold], with human-intervention frames forced to True: an
+    expert correction during an autonomous rollout counts as an improvement
+    whatever the advantage says. Missing (NaN) flags never force a label, so an
+    absent intervention column cannot silently turn into "corrected".
+    """
+    advantages = np.asarray(advantages, dtype=float)
+    if advantages.ndim != 1 or len(advantages) == 0:
+        raise ValueError('Expected a nonempty 1-D advantage array')
+    if not np.isfinite(advantages).all():
+        raise ValueError('Non-finite advantages')
+    if not np.isfinite(threshold):
+        raise ValueError('threshold must be finite')
+    forced = np.zeros(len(advantages), dtype=bool)
+    if intervention is not None:
+        flags = np.asarray(intervention, dtype=float)
+        if flags.shape != advantages.shape:
+            raise ValueError('Intervention flags must align with advantages')
+        known = ~np.isnan(flags)
+        if not np.isin(flags[known], [0., 1.]).all():
+            raise ValueError('Intervention flags must be 0/1 or NaN')
+        forced = known & (flags == 1.)
+    return (advantages > threshold) | forced, forced
+
+
 def export_advantage_table(scores):
     """Project scored frames into timestep-level RECAP metadata; never mutates input."""
     if not isinstance(scores, pd.DataFrame):
         raise ValueError('scores must be a pandas DataFrame')
     required = set(ADVANTAGE_TABLE_KEYS) | {'timestamp', 'split', 'threshold',
-                                            'advantage_continuous', 'is_advantage'}
+                                            'advantage_continuous', 'is_advantage',
+                                            'advantage_forced'}
     missing = sorted(required - set(scores.columns))
     if missing:
         raise ValueError(f'Missing scores columns: {missing}')
@@ -60,11 +109,15 @@ def export_advantage_table(scores):
         raise ValueError('Non-finite timestamps')
     if not scores['is_advantage'].isin([True, False, 0, 1]).all():
         raise ValueError('is_advantage must be boolean')
+    if not scores['advantage_forced'].isin([True, False, 0, 1]).all():
+        raise ValueError('advantage_forced must be boolean')
     advantage = scores['is_advantage'].astype(bool).to_numpy()
-    if not np.array_equal(advantage, continuous > threshold):
-        raise ValueError('is_advantage disagrees with advantage_continuous > threshold')
-    table = scores[[c for c in ADVANTAGE_TABLE_COLUMNS if c != 'advantage']].copy()
+    forced = scores['advantage_forced'].astype(bool).to_numpy()
+    if not np.array_equal(advantage, (continuous > threshold) | forced):
+        raise ValueError('is_advantage disagrees with advantage_continuous > threshold unless forced')
+    table = scores[[c for c in ADVANTAGE_TABLE_COLUMNS if c not in ('advantage', 'advantage_forced')]].copy()
     table['advantage'] = advantage
+    table['advantage_forced'] = forced
     return table.sort_values(ADVANTAGE_TABLE_KEYS, kind='mergesort').reset_index(drop=True)
 
 

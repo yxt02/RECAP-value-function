@@ -6,7 +6,8 @@ import numpy as np
 import pandas as pd
 import torch
 from submodules.advantage import (compute_advantage, label_scores, intervention_windows,
-                                  export_advantage_table, ADVANTAGE_TABLE_COLUMNS)
+                                  export_advantage_table, value_percentile_threshold,
+                                  label_improvement, ADVANTAGE_TABLE_COLUMNS)
 from submodules.contracts import episode_returns
 from submodules.checkpoint import distribution_bins, ARCHITECTURE
 from submodules.training_workflow import targets_to_bin_indices
@@ -23,7 +24,7 @@ def make_scores(n=4, horizons=(50,), threshold=0.):
             effective_horizon=h, reward_sum_raw=0., value_next=-.4,
             terminal_reached=False, advantage_continuous=continuous,
             horizon=h, threshold=threshold, label=np.where(continuous > threshold, 'advantage', 'disadvantage'),
-            is_advantage=continuous > threshold)))
+            is_advantage=continuous > threshold, advantage_forced=np.zeros(n, dtype=bool))))
     return pd.concat(rows, ignore_index=True)
 
 
@@ -65,6 +66,33 @@ class AdvantageTests(unittest.TestCase):
         np.testing.assert_allclose(events[0],2+grid)
         self.assertEqual(intervention_windows(times,score,None)[1].shape,(0,61))
         with self.assertRaises(ValueError):intervention_windows(times,score,np.full(50,2))
+
+    def test_value_percentile_threshold_is_task_adaptive(self):
+        values=np.linspace(-1.,0.,101)
+        self.assertAlmostEqual(value_percentile_threshold(values,30.),-0.7)
+        self.assertAlmostEqual(value_percentile_threshold(values,0.),-1.)
+        self.assertAlmostEqual(value_percentile_threshold(values,100.),0.)
+        for bad in ([],np.full(3,np.nan)):
+            with self.assertRaises(ValueError):value_percentile_threshold(bad)
+        with self.assertRaises(ValueError):value_percentile_threshold(values,-1)
+        with self.assertRaises(ValueError):value_percentile_threshold(values,101)
+
+    def test_label_improvement_forces_intervention_positive(self):
+        score=np.array([-.5,-.1,.2])
+        positive,forced=label_improvement(score,-0.2)
+        np.testing.assert_array_equal(positive,[False,True,True])
+        self.assertFalse(forced.any())
+        # A clearly negative advantage under intervention is still forced positive.
+        positive,forced=label_improvement(score,-0.2,np.array([0.,1.,np.nan]))
+        np.testing.assert_array_equal(positive,[False,True,True])
+        np.testing.assert_array_equal(forced,[False,True,False])
+        # Missing flags never force, and strict '>' keeps ties negative.
+        positive,forced=label_improvement(np.array([-.2]),-0.2,np.array([np.nan]))
+        np.testing.assert_array_equal(positive,[False])
+        self.assertFalse(forced.any())
+        with self.assertRaises(ValueError):label_improvement(score,-0.2,np.array([0.,1.]))
+        with self.assertRaises(ValueError):label_improvement(score,-0.2,np.array([0.,2.,0.]))
+        with self.assertRaises(ValueError):label_improvement(np.array([np.nan]),0.)
 
     def test_midpoint_bin_labels_and_single_sample_shape(self):
         centers=(torch.arange(201)+.5)/201-1
