@@ -71,7 +71,7 @@ python submodules/render.py --help
 
 已完成：数据适配、回报计算、价值训练、独立测试、时序诊断和逐轨迹可视化。
 
-已实现：逐帧 advantage/disadvantage 标签导出、timestep-level RECAP metadata（`advantages.parquet`）、多前瞻长度曲线、标签阈值调整及接管前后对比。标签规则已对齐 π*0.6 的 RECAP：`--label-rule percentile` 取价值预测值的第 30 百分位作为任务级阈值 `epsilon`，接管帧默认强制标为 advantage（`--force-intervention-positive`）。可用 `--write-labeled-frames` 把 advantage 列直接写进帧文件副本，下游无需再 join。输出是模型评分；π 策略训练与动作生成不在当前实现中。
+已实现：逐帧 advantage/disadvantage 标签导出、timestep-level RECAP metadata（`advantages.parquet`）、多前瞻长度曲线、标签阈值调整及接管前后对比。标签规则已对齐 RLinf RECAP：`--label-rule percentile` 对参考 split 的 **优势分数** 取 top `--percentile`%（默认 30 → 第 70 百分位）为正例阈值（`>=`），接管帧默认强制标为 advantage（`--force-intervention-positive`）。可用 `--write-labeled-frames` 把 advantage 列直接写进帧文件副本，下游无需再 join。输出是模型评分；π 策略训练与动作生成不在当前实现中。
 
 ## 下一阶段需求
 
@@ -232,7 +232,7 @@ python scripts/calculate_advantage.py --split all --output artifacts/advantage/m
 python scripts/calculate_advantage.py --reuse-values artifacts/advantage/my-test \
   --horizon 1 10 50 --threshold 0.01 --output artifacts/advantage/my-comparison
 
-# 对齐 RECAP：train 拟合 30 分位阈值 + 接管强制 positive + 标签写入帧文件
+# 对齐 RLinf RECAP：train 拟合 top 30% 正例阈值 + 接管强制 positive + 标签写入帧文件
 python scripts/calculate_advantage.py --split all --label-rule percentile --percentile 30 \
   --reference-split train --write-labeled-frames --output artifacts/advantage/my-recap
 ```

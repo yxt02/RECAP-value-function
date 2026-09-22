@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import torch
 from submodules.advantage import (compute_advantage, label_scores, intervention_windows,
-                                  export_advantage_table, value_percentile_threshold,
+                                  export_advantage_table, quantile_threshold,
                                   label_improvement, ADVANTAGE_TABLE_COLUMNS)
 from submodules.contracts import episode_returns
 from submodules.checkpoint import distribution_bins, ARCHITECTURE
@@ -67,18 +67,25 @@ class AdvantageTests(unittest.TestCase):
         self.assertEqual(intervention_windows(times,score,None)[1].shape,(0,61))
         with self.assertRaises(ValueError):intervention_windows(times,score,np.full(50,2))
 
-    def test_value_percentile_threshold_is_task_adaptive(self):
-        values=np.linspace(-1.,0.,101)
-        self.assertAlmostEqual(value_percentile_threshold(values,30.),-0.7)
-        self.assertAlmostEqual(value_percentile_threshold(values,0.),-1.)
-        self.assertAlmostEqual(value_percentile_threshold(values,100.),0.)
-        for bad in ([],np.full(3,np.nan)):
-            with self.assertRaises(ValueError):value_percentile_threshold(bad)
-        with self.assertRaises(ValueError):value_percentile_threshold(values,-1)
-        with self.assertRaises(ValueError):value_percentile_threshold(values,101)
+    def test_quantile_threshold_top_fraction_on_advantages(self):
+        # RLinf rule: threshold = percentile(scores, (1-f)*100); top f is positive.
+        scores = np.linspace(-1., 0., 101)  # 0th..100th pct = -1..0
+        self.assertAlmostEqual(quantile_threshold(scores, 0.3), -0.3)   # 70th pct
+        self.assertAlmostEqual(quantile_threshold(scores, 0.5), -0.5)   # 50th pct
+        self.assertAlmostEqual(quantile_threshold(scores, 0.01), -0.01) # 99th pct (top 1% positive)
+        # Top 30% at/above threshold ≈ 30% of samples.
+        thr = quantile_threshold(scores, 0.3)
+        self.assertAlmostEqual(float((scores >= thr).mean()), 0.3, places=1)
+        for bad in ([], np.full(3, np.nan)):
+            with self.assertRaises(ValueError): quantile_threshold(bad, 0.3)
+        with self.assertRaises(ValueError): quantile_threshold(scores, 0.)
+        with self.assertRaises(ValueError): quantile_threshold(scores, 1.)
+        with self.assertRaises(ValueError): quantile_threshold(scores, -0.1)
+        with self.assertRaises(ValueError): quantile_threshold(scores, 1.5)
 
     def test_label_improvement_forces_intervention_positive(self):
         score=np.array([-.5,-.1,.2])
+        # RECAP default inclusive >=.
         positive,forced=label_improvement(score,-0.2)
         np.testing.assert_array_equal(positive,[False,True,True])
         self.assertFalse(forced.any())
@@ -86,8 +93,10 @@ class AdvantageTests(unittest.TestCase):
         positive,forced=label_improvement(score,-0.2,np.array([0.,1.,np.nan]))
         np.testing.assert_array_equal(positive,[False,True,True])
         np.testing.assert_array_equal(forced,[False,True,False])
-        # Missing flags never force, and strict '>' keeps ties negative.
-        positive,forced=label_improvement(np.array([-.2]),-0.2,np.array([np.nan]))
+        # RECAP ties are positive; fixed/STEAM strict > keeps ties negative.
+        positive,forced=label_improvement(np.array([-.2]),-0.2,np.array([np.nan]),inclusive=True)
+        np.testing.assert_array_equal(positive,[True])
+        positive,forced=label_improvement(np.array([-.2]),-0.2,np.array([np.nan]),inclusive=False)
         np.testing.assert_array_equal(positive,[False])
         self.assertFalse(forced.any())
         with self.assertRaises(ValueError):label_improvement(score,-0.2,np.array([0.,1.]))
@@ -114,16 +123,23 @@ class AdvantageTests(unittest.TestCase):
     def test_export_advantage_table_projection(self):
         scores = make_scores()
         before = scores.copy()
-        table = export_advantage_table(scores)
+        table = export_advantage_table(scores, inclusive=False)
         self.assertEqual(list(table.columns), ADVANTAGE_TABLE_COLUMNS)
         self.assertEqual(len(table), len(scores))
         self.assertEqual(table['advantage'].dtype, bool)
         np.testing.assert_array_equal(table['advantage'].to_numpy(), scores['is_advantage'].to_numpy())
         pd.testing.assert_frame_equal(scores, before)
+        # Inclusive mode accepts A >= threshold labels.
+        tied = make_scores(threshold=0.5)  # last continuous value == 0.5
+        tied.loc[tied.index[-1], 'is_advantage'] = True
+        table = export_advantage_table(tied, inclusive=True)
+        self.assertTrue(bool(table['advantage'].iloc[-1]))
+        with self.assertRaises(ValueError):
+            export_advantage_table(tied, inclusive=False)  # strict > would reject the tie
 
     def test_export_advantage_table_multi_horizon_unique_keys(self):
         scores = make_scores(horizons=(1, 10, 50))
-        table = export_advantage_table(scores)
+        table = export_advantage_table(scores, inclusive=False)
         keys = ['dataset_id', 'episode_index', 'frame_index', 'horizon']
         self.assertFalse(table.duplicated(keys).any())
         self.assertEqual(len(table), 12)
@@ -140,7 +156,7 @@ class AdvantageTests(unittest.TestCase):
             lambda s: s.assign(is_advantage=lambda d: ~d['is_advantage'].astype(bool)),
         ):
             with self.assertRaises(ValueError):
-                export_advantage_table(mutate(base))
+                export_advantage_table(mutate(base), inclusive=False)
         with self.assertRaises(ValueError):
             export_advantage_table(base.to_numpy())
 

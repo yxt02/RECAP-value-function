@@ -114,11 +114,11 @@ def main(argv=None):
     parser.add_argument('--output', help='New result directory; existing nonempty directory is rejected')
     parser.add_argument('--reuse-values', help='Prior COMPLETE result directory; recalculate without model inference')
     parser.add_argument('--label-rule', choices=['fixed', 'percentile'], default='fixed',
-                        help='fixed: A > --threshold; percentile: A > epsilon, the value percentile below')
+                        help='fixed: A > --threshold; percentile: top --percentile%% of reference-split advantages are positive (RECAP)')
     parser.add_argument('--percentile', type=float, default=30.,
-                        help='Value percentile used as epsilon under --label-rule percentile')
+                        help='Top percent of advantage scores labeled positive under --label-rule percentile (default 30)')
     parser.add_argument('--reference-split', choices=['train', 'val', 'test'], default='train',
-                        help='Split whose predicted values define epsilon; must be scored in this run')
+                        help='Split whose advantage scores define the quantile threshold; must be scored in this run')
     parser.add_argument('--force-intervention-positive', action=argparse.BooleanOptionalAction, default=True,
                         help='Force I=positive on human-intervention frames (RECAP correction rule)')
     parser.add_argument('--write-labeled-frames', action='store_true',
@@ -131,12 +131,14 @@ def main(argv=None):
         parser.error('horizons and max-episodes must be positive')
     if not __import__('math').isfinite(args.threshold):
         parser.error('threshold must be finite')
-    if args.label_rule=='percentile' and not 0. <= args.percentile <= 100.:
-        parser.error('percentile must lie in [0, 100]')
+    if args.label_rule=='percentile' and not 0. < args.percentile < 100.:
+        parser.error('percentile must lie in (0, 100) for top-fraction labeling')
     if args.write_back:
         if args.labeled_dir:
             parser.error('--write-back targets the original files; --labeled-dir is meaningless')
         args.write_labeled_frames = True
+    inclusive=args.label_rule=='percentile'
+    positive_fraction=args.percentile/100. if inclusive else None
 
     import logging
     import numpy as np
@@ -145,7 +147,7 @@ def main(argv=None):
     from torch.utils.data import Subset
     from omegaconf import OmegaConf
     from submodules.advantage import (compute_advantage, intervention_windows, export_advantage_table,
-                                      value_percentile_threshold, label_improvement)
+                                      quantile_threshold, label_improvement)
     from submodules.cache import prepare_features, cache_location, cache_identity, sha256
     from submodules.checkpoint import distribution_bins
     from submodules.contracts import resolve_path, episode_returns
@@ -286,53 +288,77 @@ def main(argv=None):
     key=['dataset_id','episode_index','frame_index']
     if values.duplicated(key).any(): raise ValueError('Duplicate frame keys')
     values.to_parquet(output/'values.parquet',index=False)
-    if args.label_rule=='percentile':
-        reference=values[values.split==args.reference_split]
+    # Pass 1: continuous advantages for every episode/horizon (no labels yet).
+    score_frames=[]
+    for (dataset,ep),frame in values.groupby(['dataset_id','episode_index'],sort=False):
+        frame=frame.sort_values('frame_index');n=len(frame)
+        if not np.array_equal(frame.frame_index,np.arange(n)): raise ValueError('Non-contiguous episode frames')
+        for horizon in horizons:
+            result=compute_advantage(frame.value,frame.reward_raw,horizon,manifest['return_scale'],manifest['gamma'])
+            part=frame[key+['timestamp','split','success','intervention','value']].copy()
+            for name,array in result.items():part[name]=array
+            part['horizon']=horizon
+            score_frames.append(part)
+    scores=pd.concat(score_frames,ignore_index=True)
+    # Fit threshold on advantage scores (not values): top --percentile% positive.
+    if inclusive:
+        reference=scores[scores.split==args.reference_split]
         if reference.empty:
             raise ValueError(f'--reference-split {args.reference_split} is not scored in this run; '
                              f'include it (for example --split all) or reuse a result that does')
-        threshold=value_percentile_threshold(reference.value.to_numpy(float),args.percentile)
-        threshold_rule=f'epsilon = {args.percentile:g}th percentile of predicted values on {args.reference_split}'
+        threshold=quantile_threshold(reference.advantage_continuous.to_numpy(float),positive_fraction)
+        threshold_rule=(f'top {args.percentile:g}% of {args.reference_split} advantages positive '
+                        f'(threshold = {(100-args.percentile):g}th percentile of advantage scores, compare >=)')
     else:
         threshold=float(args.threshold)
         threshold_rule='fixed strict >; equality is disadvantage'
     threshold_rule+=('; intervention frames forced positive' if args.force_intervention_positive
                      else '; intervention frames labeled by score')
+    # Pass 2: binarize with the fitted threshold (RECAP inclusive >= under percentile).
+    force_flags=scores['intervention'].to_numpy() if args.force_intervention_positive else None
+    positive,forced=label_improvement(scores['advantage_continuous'].to_numpy(float),threshold,
+                                       force_flags,inclusive=inclusive)
+    scores['threshold']=threshold
+    scores['label']=np.where(positive,'advantage','disadvantage')
+    scores['is_advantage']=positive
+    scores['advantage_forced']=forced
+    scores.to_parquet(output/'scores.parquet',index=False)
     manifest.update(created_utc=datetime.now(timezone.utc).isoformat(),status='running',horizons=horizons,
                     threshold=threshold,threshold_rule=threshold_rule,label_rule=args.label_rule,
-                    percentile=args.percentile if args.label_rule=='percentile' else None,
-                    reference_split=args.reference_split if args.label_rule=='percentile' else None,
+                    percentile=args.percentile if inclusive else None,
+                    positive_fraction=positive_fraction,
+                    reference_split=args.reference_split if inclusive else None,
+                    label_inclusive=bool(inclusive),
                     force_intervention_positive=bool(args.force_intervention_positive),
                     values_sha256=sha256(output/'values.parquet'))
     if frame_files: dump(output/'frame_files.json',frame_files)
     dump(output/'manifest.json',manifest)
-    plt=configure_plots();(output/'plots').mkdir();score_frames=[];summaries=[];events={h:[] for h in horizons}
-    links=[]
-    for (dataset,ep),frame in values.groupby(['dataset_id','episode_index'],sort=False):
-        frame=frame.sort_values('frame_index');n=len(frame)
-        if not np.array_equal(frame.frame_index,np.arange(n)): raise ValueError('Non-contiguous episode frames')
-        flags=None if frame.intervention.isna().all() else frame.intervention.to_numpy()
+    # Pass 3: plots, events, summaries from labeled scores.
+    plt=configure_plots();(output/'plots').mkdir();summaries=[];events={h:[] for h in horizons}
+    links=[];grid=None
+    for (dataset,ep),group in scores.groupby(['dataset_id','episode_index'],sort=False):
+        first=group[group.horizon==horizons[0]].sort_values('frame_index')
+        n=len(first)
+        if not np.array_equal(first.frame_index,np.arange(n)): raise ValueError('Non-contiguous episode frames')
+        flags=None if first.intervention.isna().all() else first.intervention.to_numpy()
         fig,axes=plt.subplots(3,1,figsize=(12,8),sharex=True)
-        t=frame.timestamp.to_numpy();axes[0].plot(t,frame.value,label='模型价值 V(t)');axes[0].set_ylabel('价值')
+        t=first.timestamp.to_numpy();axes[0].plot(t,first.value,label='模型价值 V(t)');axes[0].set_ylabel('价值')
         for horizon in horizons:
-            result=compute_advantage(frame.value,frame.reward_raw,horizon,manifest['return_scale'],manifest['gamma'])
-            score=result['advantage_continuous']
-            positive,forced=label_improvement(score,threshold,flags if args.force_intervention_positive else None)
-            part=frame[key+['timestamp','split','success','intervention','value']].copy()
-            for name,array in result.items():part[name]=array
-            part['horizon']=horizon;part['threshold']=threshold
-            part['label']=np.where(positive,'advantage','disadvantage')
-            part['is_advantage']=positive;part['advantage_forced']=forced;score_frames.append(part)
+            block=group[group.horizon==horizon].sort_values('frame_index')
+            if len(block)!=n or not np.array_equal(block.frame_index,np.arange(n)):
+                raise ValueError(f'Score/frame misalignment: {dataset}:{ep} horizon {horizon}')
+            score=block.advantage_continuous.to_numpy()
+            pos=block.is_advantage.to_numpy(bool);thr=float(block.threshold.iloc[0])
             axes[1].plot(t,score,label=f'{horizon} 帧优势')
             if len(horizons)==1:
-                axes[1].fill_between(t,threshold,score,where=positive,color='green',alpha=.2)
-                axes[1].fill_between(t,threshold,score,where=~positive,color='red',alpha=.15)
+                axes[1].fill_between(t,thr,score,where=pos,color='green',alpha=.2)
+                axes[1].fill_between(t,thr,score,where=~pos,color='red',alpha=.15)
             grid,windows=intervention_windows(t,score,flags)
             events[horizon].extend(windows.tolist())
             summaries.append(dict(dataset_id=dataset,episode_index=int(ep),horizon=horizon,frames=n,
-                success=bool(frame.success.iloc[0]),split=frame.split.iloc[0],mean_value=float(frame.value.mean()),
-                mean_advantage=float(score.mean()),advantage_fraction=float(np.mean(positive)),
-                forced_positive_frames=int(forced.sum()),
+                success=bool(first.success.iloc[0]),split=first.split.iloc[0],mean_value=float(first.value.mean()),
+                mean_advantage=float(score.mean()),advantage_fraction=float(pos.mean()),
+                forced_positive_frames=int(block.advantage_forced.sum()),
                 intervention_available=flags is not None,intervention_starts=len(windows),
                 intervention_mean_advantage=float(score[flags==1].mean()) if flags is not None and np.any(flags==1) else None,
                 non_intervention_mean_advantage=float(score[flags==0].mean()) if flags is not None and np.any(flags==0) else None))
@@ -341,11 +367,10 @@ def main(argv=None):
         else:axes[2].text(.1,.5,'未提供接管标记',transform=axes[2].transAxes)
         axes[2].set_ylabel('接管');axes[2].set_xlabel('时间 / 秒')
         for ax in axes[:2]:ax.legend()
-        fig.suptitle(f'{dataset} / {ep} · {"成功" if frame.success.iloc[0] else "失败"} · {frame.split.iloc[0]}')
+        fig.suptitle(f'{dataset} / {ep} · {"成功" if first.success.iloc[0] else "失败"} · {first.split.iloc[0]}')
         fig.tight_layout();name=f'episode-{len(links):04d}.png';fig.savefig(output/'plots'/name,dpi=120);plt.close(fig)
         links.append((f'{dataset}:{ep}',name))
-    scores=pd.concat(score_frames,ignore_index=True);scores.to_parquet(output/'scores.parquet',index=False)
-    advantages=export_advantage_table(scores);advantages.to_parquet(output/'advantages.parquet',index=False)
+    advantages=export_advantage_table(scores,inclusive=inclusive);advantages.to_parquet(output/'advantages.parquet',index=False)
     labeled=[]
     if args.write_labeled_frames:
         destination=resolve_path(args.labeled_dir) if args.labeled_dir else output/'labeled_frames'

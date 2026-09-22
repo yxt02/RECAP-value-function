@@ -202,4 +202,4 @@ bash run_test.sh --dry-run
 
 ## 优势计算入口
 
-新增 `python scripts/calculate_advantage.py`，默认完整测试集、50 帧前瞻、固定阈值 0，并导出 timestep-level RECAP metadata（`advantages.parquet`）供训练侧按帧查 advantage label。标签规则已对齐 π*0.6 的 RECAP：`--label-rule percentile` 取 `--reference-split`（默认 train）价值预测值的第 `--percentile`（默认 30）百分位作为任务级阈值 `epsilon`；`--force-intervention-positive`（默认开）把接管帧强制标为 advantage，被强制的帧由 `advantage_forced` 列标记。`--write-labeled-frames` 把 advantage 列直接追加进帧文件副本（`labeled_frames/`，结构镜像原数据集，下游无需 join）；`--write-back` 则覆盖原始帧文件（首次覆盖前生成 `.bak`，会改变特征缓存身份）。输入输出及所有参数见 [优势计算说明](advantage.md)。
+新增 `python scripts/calculate_advantage.py`，默认完整测试集、50 帧前瞻、固定阈值 0，并导出 timestep-level RECAP metadata（`advantages.parquet`）供训练侧按帧查 advantage label。标签规则已对齐 RLinf RECAP：`--label-rule percentile` 对 `--reference-split`（默认 train）的 **advantage_continuous** 取 top `--percentile`%（默认 30 → 第 70 百分位）为正例阈值，比较用 `>=`；`--force-intervention-positive`（默认开）把接管帧强制标为 advantage，被强制的帧由 `advantage_forced` 列标记。`--write-labeled-frames` 把 advantage 列直接追加进帧文件副本（`labeled_frames/`，结构镜像原数据集，下游无需 join）；`--write-back` 则覆盖原始帧文件（首次覆盖前生成 `.bak`，会改变特征缓存身份）。输入输出及所有参数见 [优势计算说明](advantage.md)。

@@ -8,7 +8,7 @@ ADVANTAGE_TABLE_COLUMNS = ['dataset_id', 'episode_index', 'frame_index', 'timest
 ADVANTAGE_TABLE_KEYS = ['dataset_id', 'episode_index', 'frame_index', 'horizon']
 
 # RECAP binarizes advantage with a task-level threshold and forces corrections positive.
-DEFAULT_PERCENTILE = 30.
+DEFAULT_POSITIVE_FRACTION = 0.3
 
 
 def compute_advantage(values, rewards, horizon=50, scale=4000., gamma=1.):
@@ -43,30 +43,32 @@ def label_scores(scores, threshold=0.):
     return np.where(scores > threshold, 'advantage', 'disadvantage')
 
 
-def value_percentile_threshold(values, percentile=DEFAULT_PERCENTILE):
-    """Task-level improvement threshold epsilon, taken from predicted values.
+def quantile_threshold(scores, positive_fraction=DEFAULT_POSITIVE_FRACTION):
+    """Threshold whose top ``positive_fraction`` of scores is positive.
 
-    Mirrors the RECAP rule: epsilon is the configured percentile of the value
-    function's own predictions for the task, so the cut adapts per task instead
-    of being a fixed number. Multi-task runs must call this once per task.
+    Matches RLinf RECAP/STEAM: ``threshold = percentile(scores, (1 - f) * 100)``
+    so ``positive_fraction=0.3`` is the 70th percentile and the top 30% of
+    continuous advantage scores lie at/above it. Fit on advantage scores, not
+    value predictions (those live on a different scale).
     """
-    values = np.asarray(values, dtype=float)
-    if values.ndim != 1 or len(values) == 0:
-        raise ValueError('Expected a nonempty 1-D value array')
-    if not np.isfinite(values).all():
-        raise ValueError('Non-finite values')
-    if not np.isfinite(percentile) or not 0. <= percentile <= 100.:
-        raise ValueError('percentile must lie in [0, 100]')
-    return float(np.percentile(values, percentile, method='linear'))
+    scores = np.asarray(scores, dtype=float)
+    if scores.ndim != 1 or len(scores) == 0:
+        raise ValueError('Expected a nonempty 1-D score array')
+    if not np.isfinite(scores).all():
+        raise ValueError('Non-finite scores')
+    if not np.isfinite(positive_fraction) or not 0. < positive_fraction < 1.:
+        raise ValueError('positive_fraction must lie in (0, 1)')
+    return float(np.percentile(scores, (1.0 - float(positive_fraction)) * 100.0,
+                               method='linear'))
 
 
-def label_improvement(advantages, threshold, intervention=None):
+def label_improvement(advantages, threshold, intervention=None, inclusive=True):
     """Binarized improvement indicator and the frames forced positive.
 
-    I = 1[A > threshold], with human-intervention frames forced to True: an
-    expert correction during an autonomous rollout counts as an improvement
-    whatever the advantage says. Missing (NaN) flags never force a label, so an
-    absent intervention column cannot silently turn into "corrected".
+    RECAP default is ``inclusive=True`` → ``I = 1[A >= threshold]``; STEAM/fixed
+    threshold uses ``inclusive=False`` → strict ``>``. Human-intervention frames
+    are forced True: an expert correction counts as an improvement whatever the
+    advantage says. Missing (NaN) flags never force a label.
     """
     advantages = np.asarray(advantages, dtype=float)
     if advantages.ndim != 1 or len(advantages) == 0:
@@ -84,10 +86,11 @@ def label_improvement(advantages, threshold, intervention=None):
         if not np.isin(flags[known], [0., 1.]).all():
             raise ValueError('Intervention flags must be 0/1 or NaN')
         forced = known & (flags == 1.)
-    return (advantages > threshold) | forced, forced
+    base = advantages >= threshold if inclusive else advantages > threshold
+    return base | forced, forced
 
 
-def export_advantage_table(scores):
+def export_advantage_table(scores, inclusive=False):
     """Project scored frames into timestep-level RECAP metadata; never mutates input."""
     if not isinstance(scores, pd.DataFrame):
         raise ValueError('scores must be a pandas DataFrame')
@@ -113,8 +116,10 @@ def export_advantage_table(scores):
         raise ValueError('advantage_forced must be boolean')
     advantage = scores['is_advantage'].astype(bool).to_numpy()
     forced = scores['advantage_forced'].astype(bool).to_numpy()
-    if not np.array_equal(advantage, (continuous > threshold) | forced):
-        raise ValueError('is_advantage disagrees with advantage_continuous > threshold unless forced')
+    base = continuous >= threshold if inclusive else continuous > threshold
+    if not np.array_equal(advantage, base | forced):
+        op = '>=' if inclusive else '>'
+        raise ValueError(f'is_advantage disagrees with advantage_continuous {op} threshold unless forced')
     table = scores[[c for c in ADVANTAGE_TABLE_COLUMNS if c not in ('advantage', 'advantage_forced')]].copy()
     table['advantage'] = advantage
     table['advantage_forced'] = forced
