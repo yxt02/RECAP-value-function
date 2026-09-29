@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Evaluation and HTML report workflows for the frozen-encoder distributional value model.
 
-    python scripts/evaluation_workflow.py evaluate --checkpoint checkpoints/optimized/best_model.pt
+    python submodules/evaluate.py --checkpoint checkpoints/recap_patch/best_model.pt
     python scripts/evaluation_workflow.py render artifacts/evaluation/<run>
 
 See docs/usage.md for the input/output contracts.
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-DEFAULT_CHECKPOINT = 'checkpoints/optimized/best_model.pt'
+DEFAULT_CHECKPOINT = 'checkpoints/recap_patch/best_model.pt'
 FONT = Path('/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc')
 BLUE, ORANGE, PURPLE, GREEN = '#2463b9', '#d26121', '#8652a0', '#098779'
 STYLE = '''body{margin:0;background:#f3f6fa;color:#192b41;font:16px/1.6 system-ui,sans-serif}main{max-width:1280px;margin:auto;padding:28px}h1{font-size:28px;line-height:1.3}h2{font-size:21px}a{color:#165ca6}nav{display:flex;gap:20px;flex-wrap:wrap}section,.card{background:white;padding:20px;border-radius:12px;margin:20px 0;box-shadow:0 2px 10px #142a4210}.muted{color:#5c6b7d}.notice{background:#fff4df;border-left:4px solid #d99628;padding:15px}table{width:100%;border-collapse:collapse;font-size:14px}td,th{text-align:left;padding:10px;border-bottom:1px solid #e5eaf1}th{background:#eef3f9}img{width:100%;height:auto}video{width:100%;max-height:520px;background:#111;border-radius:8px}input[type=range]{width:100%}select{padding:7px;margin-right:12px}code{font-size:13px;overflow-wrap:anywhere}.metric{display:inline-block;margin:6px 22px 6px 0}.metric b{display:block;font-size:25px}.plot{position:relative;padding:0}.cursor{position:absolute;top:10%;bottom:8.5%;width:1px;background:#25394c;pointer-events:none}.good{color:#16765d}.bad{color:#b94735}.scroll{overflow:auto}footer{margin-top:30px;font-size:13px;color:#5c6b7d}button{padding:7px 12px;cursor:pointer}'''
@@ -111,8 +111,14 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
     output.mkdir(parents=True, exist_ok=True)
 
     payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
-    from submodules.checkpoint import distribution_bins
-    num_bins = distribution_bins(payload)
+    from submodules.recap_model import ARCHITECTURE as RECAP_ARCHITECTURE
+    recap_mode = payload.get('architecture') == RECAP_ARCHITECTURE
+    if recap_mode:
+        from submodules.recap_workflow import load_recap_checkpoint, predict_recap_dataset
+        num_bins = payload['config']['num_bins']
+    else:
+        from submodules.checkpoint import distribution_bins
+        num_bins = distribution_bins(payload)
 
     config = dict(payload['config'])
     config.update(max_samples=None, max_steps=None, val_steps=None, cache_num_workers=0)
@@ -132,10 +138,12 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
     # Write the evaluation protocol
     protocol = dict(
         created_utc=datetime.now(timezone.utc).isoformat(),
+        architecture=payload.get('architecture'),
         checkpoint=str(checkpoint),
         checkpoint_sha256=checkpoint_hash,
         checkpoint_epoch=payload['epoch'],
         checkpoint_step=payload['global_step'],
+        checkpoint_smoke_test=bool(payload.get('smoke_test', False)),
         splits_sha256={s: sha256(PROJECT_ROOT / f'data/splits/{s}.json') for s in split_json},
         primary_metrics=['frame MSE/MAE/RMSE', 'equal-episode MSE', 'paired episode-bootstrap 95% intervals'],
         baselines=['train global mean', 'train per-dataset mean', 'train per-dataset linear elapsed-frame predictor'],
@@ -149,6 +157,8 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
         test_threshold_selection=False,
         config=config
     )
+    if recap_mode and payload.get('split_sha256') != protocol['splits_sha256']:
+        raise ValueError('RECAP checkpoint was trained with different split manifests')
 
     protocol_path = output / 'protocol.json'
     if protocol_path.exists():
@@ -163,9 +173,10 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
     test = raw_dataset(config, 'test')
 
     # Verify the training cache identity
-    train_path, train_digest, train_identity = cache_location(train, config, 'train')
-    if train_digest != payload['feature_cache_manifest']['digest']:
-        raise ValueError('Training data/encoder identity differs from checkpoint')
+    if not recap_mode:
+        train_path, train_digest, train_identity = cache_location(train, config, 'train')
+        if train_digest != payload['feature_cache_manifest']['digest']:
+            raise ValueError('Training data/encoder identity differs from checkpoint')
 
     # Extract metadata
     train_episodes, train_targets = split_metadata(train, 'train')
@@ -177,32 +188,30 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
     dump(output / 'baseline_fit_train_only.json', fit)
 
     # Prepare the test feature cache
-    path, digest, _ = cache_location(test, config, 'test')
     logger.info('Full test: %d episodes, %d frames, checkpoint epoch %d', len(episodes), len(test), payload['epoch'])
-
-    model = ValueModel(
-        str(resolve_path(config['siglip_path'])),
-        config['cameras'], True, config['precision'],
-        config['projection_dim'],
-        num_bins=num_bins, load_encoder=not (path / 'manifest.json').exists()
-    ).cuda().eval()
-
-    cached = prepare_features(test, model, config, 'test', torch.device('cuda'))
-    model.siglip = None
-    model.load_state_dict(payload['model_state_dict'], strict=True)
-    model.eval()
-    torch.cuda.empty_cache()
-
-    # Generate predictions
-    loader = make_loader(cached, config, 'test', batch_size=config['cached_batch_size'], workers=0)
-    predictions = []
-    with torch.inference_mode(), autocast(config, torch.device('cuda')):
-        for batch in loader:
-            predictions.append(model(features=batch['features'].cuda()).float().cpu().numpy().ravel())
-    prediction = np.concatenate(predictions).astype(np.float64)
-
-    # Verify the labels agree
-    np.testing.assert_allclose(targets, cached.targets.numpy(), atol=6e-8, rtol=0)
+    if recap_mode:
+        model = load_recap_checkpoint(payload, torch.device('cuda'))
+        prediction = predict_recap_dataset(model, test, config, torch.device('cuda')).astype(np.float64)
+    else:
+        path, digest, _ = cache_location(test, config, 'test')
+        model = ValueModel(
+            str(resolve_path(config['siglip_path'])),
+            config['cameras'], True, config['precision'],
+            config['projection_dim'],
+            num_bins=num_bins, load_encoder=not (path / 'manifest.json').exists()
+        ).cuda().eval()
+        cached = prepare_features(test, model, config, 'test', torch.device('cuda'))
+        model.siglip = None
+        model.load_state_dict(payload['model_state_dict'], strict=True)
+        model.eval()
+        torch.cuda.empty_cache()
+        loader = make_loader(cached, config, 'test', batch_size=config['cached_batch_size'], workers=0)
+        predictions = []
+        with torch.inference_mode(), autocast(config, torch.device('cuda')):
+            for batch in loader:
+                predictions.append(model(features=batch['features'].cuda()).float().cpu().numpy().ravel())
+        prediction = np.concatenate(predictions).astype(np.float64)
+        np.testing.assert_allclose(targets, cached.targets.numpy(), atol=6e-8, rtol=0)
     if len(prediction) != len(targets) or not np.isfinite(prediction).all():
         raise ValueError('Invalid predictions')
 
@@ -361,6 +370,7 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
 
     result = dict(
         checkpoint_sha256=checkpoint_hash,
+        architecture=payload.get('architecture'),
         checkpoint_epoch=payload['epoch'],
         checkpoint_step=payload['global_step'],
         test_episodes=len(episodes),
@@ -375,7 +385,7 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
         temporal=temporal,
         episode_spearman_median=float(np.median([e['spearman'] for e in episodes if e['spearman'] is not None])),
         negative_episode_spearman_count=sum(e['spearman'] is not None and e['spearman'] < 0 for e in episodes),
-        test_feature_cache=str(cached.path)
+        test_feature_cache=None if recap_mode else str(cached.path)
     )
 
     # Save predictions and results
@@ -387,16 +397,17 @@ def evaluate(checkpoint_path=DEFAULT_CHECKPOINT, output_dir=None):
     dump(output / 'audit.json', dict(
         checkpoint_sha256_before=checkpoint_hash,
         checkpoint_sha256_after=sha256(checkpoint),
-        train_identity_matches_checkpoint=True,
+        train_identity_matches_checkpoint=None if recap_mode else True,
+        train_split_hash_matches_checkpoint=True if recap_mode else None,
         splits_disjoint=True,
         full_test_frames=len(prediction),
-        test_cache_digest=cached.manifest['digest'],
+        test_cache_digest=None if recap_mode else cached.manifest['digest'],
         sources_sha256={str(p.relative_to(PROJECT_ROOT)): sha256(p) for p in [
             Path(__file__),
-            PROJECT_ROOT / 'submodules/model.py',
+            PROJECT_ROOT / ('submodules/recap_model.py' if recap_mode else 'submodules/model.py'),
             PROJECT_ROOT / 'submodules/evaluation.py',
             PROJECT_ROOT / 'submodules/runtime.py',
-            PROJECT_ROOT / 'submodules/cache.py'
+            PROJECT_ROOT / ('submodules/recap_workflow.py' if recap_mode else 'submodules/cache.py')
         ]},
         finished_utc=datetime.now(timezone.utc).isoformat()
     ))

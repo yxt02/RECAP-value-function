@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
-"""训练视觉价值基线模型。
+"""训练 RECAP 视觉与文字价值模型。
 
 用法：
     python scripts/train.py                        # 默认配置训练
     python scripts/train.py --smoke_test           # 冒烟测试
-    python scripts/train.py --prepare-cache        # 只构建特征缓存
-    python scripts/train.py --no-cache             # 在线编码训练
     python scripts/train.py --num_epochs 5         # 覆盖轮数
 
 详见 docs/usage.md。
@@ -34,13 +32,16 @@ logger = logging.getLogger(__name__)
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description='训练视觉价值基线模型')
+    p = argparse.ArgumentParser(description='训练 RECAP 视觉与文字价值模型')
     p.add_argument('--config', default=DEFAULT_CONFIG, help='训练配置文件路径')
     p.add_argument('--smoke_test', action='store_true', help='使用小样本冒烟测试配置')
-    p.add_argument('--prepare-cache', action='store_true', help='只构建特征缓存，不执行训练')
-    p.add_argument('--no-cache', action='store_true', help='从原始图像在线编码训练')
+    p.add_argument('--prepare-cache', action='store_true', help='仅旧平均特征架构：构建特征缓存')
+    p.add_argument('--no-cache', action='store_true', help='仅旧平均特征架构：从图像在线训练')
     for key, typ in OVERRIDABLE.items():
         p.add_argument('--' + key, type=typ)
+    for key in ('freeze_vision_encoder', 'freeze_vlm', 'freeze_value_expert',
+                'gradient_checkpointing'):
+        p.add_argument('--' + key, action=argparse.BooleanOptionalAction, default=None)
     args = p.parse_args(argv)
 
     print('=' * 60)
@@ -49,7 +50,8 @@ def main(argv=None):
 
     config = load_config(args.config)
     for key, value in vars(args).items():
-        if key in OVERRIDABLE and value is not None:
+        if (key in OVERRIDABLE or key in ('freeze_vision_encoder', 'freeze_vlm',
+                                        'freeze_value_expert', 'gradient_checkpointing')) and value is not None:
             config[key] = value
     if args.no_cache:
         config['feature_cache'] = False
@@ -57,7 +59,7 @@ def main(argv=None):
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print(f'[训练] 设备: {device}')
     print(f'[训练] 配置文件: {args.config}')
-    print(f'[训练] 保存目录: {config.get("save_dir", "checkpoints/optimized")}')
+    print(f'[训练] 保存目录: {config.get("save_dir", "checkpoints/recap_patch")}')
 
     if args.smoke_test:
         print('[训练] 模式: 冒烟测试（小样本快速验证）')
@@ -66,11 +68,15 @@ def main(argv=None):
     elif args.no_cache:
         print('[训练] 模式: 在线编码训练（无缓存）')
     else:
-        print(f'[训练] 模式: 标准训练（{config.get("num_epochs", 24)}轮 / {config.get("max_total_steps", 5000)}步）')
+        step_limit = config.get('max_total_steps')
+        limit_text = '不设总步数上限' if step_limit is None else f'最多 {step_limit} 次参数更新'
+        print(f'[训练] 模式: 标准训练（最多 {config["num_epochs"]} 轮，{limit_text}）')
 
     print(f'[训练] 特征缓存: {"启用" if config.get("feature_cache") else "禁用"}')
     print(f'[训练] 精度: {config.get("precision", "bf16")}')
-    print(f'[训练] 批大小: {config.get("cached_batch_size" if config.get("feature_cache") else "batch_size", 16)}')
+    batch_size = (1 if args.smoke_test and config.get('architecture') == 'recap_patch_gemma_expert'
+                  else config.get('cached_batch_size' if config.get('feature_cache') else 'batch_size', 16))
+    print(f'[训练] 批大小: {batch_size}')
     print('-' * 60)
 
     train(config, smoke_test=args.smoke_test, prepare_cache=args.prepare_cache)

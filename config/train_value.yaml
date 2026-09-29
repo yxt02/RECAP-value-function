@@ -1,44 +1,40 @@
-# Local SigLIP + distributional value baseline (201-bin categorical).
-# python scripts/train.py --smoke_test
+# Main value-training path: SigLIP2 patch sequence + Gemma3 task text + Gemma value expert.
+architecture: recap_patch_gemma_expert
 adaptation_config: config/z02_data.yaml
 cameras: [cam2]
 siglip_path: models/siglip2-so400m-patch14-224
-freeze_vlm: true
-projection_dim: 640
+gemma3_path: models/gemma-3-270m
+tokenizer_path: models/gemma-3-270m
+critic_expert_variant: gemma_1m
+num_bins: 201
+max_token_len: 50
 precision: bf16
-num_bins: 201  # Number of bins for categorical value distribution
-seed: 42
-torch_threads: 4
-
-# Online image batches / one-time frozen-encoder extraction. Measured on RTX 4080 SUPER.
-batch_size: 16
+freeze_vision_encoder: false
+freeze_vlm: false
+freeze_value_expert: false
+gradient_checkpointing: true
+feature_cache: false
+batch_size: 4
+gradient_accumulation_steps: 4
 num_workers: 4
 eval_num_workers: 2
 pin_memory: true
-persistent_workers: true
+persistent_workers: false
 prefetch_factor: 2
 video_cache_handles: 4
-
-# No augmentation: frozen deterministic features can be reused across epochs.
-feature_cache: true
-cache_dir: data/cache/value_features_v1
-cache_batch_size: 16
-cache_num_workers: 0  # Safe local default: a spawned validation worker exited with SIGSEGV.
-cached_batch_size: 1024
-cached_num_workers: 0
-cache_on_device: true  # ~0.60 GiB train+val; fall back to CPU if GPU memory is tight.
-
-# Bounded training; full validation every epoch, retain the best validation checkpoint.
-num_epochs: 24
-max_total_steps: 5000  # 242 steps/full epoch: at most ~20.7 passes; early stopping may stop sooner.
-early_stopping_patience: 4
+seed: 42
+torch_threads: 4
+num_epochs: 8
+max_total_steps: null  # optimizer steps; null lets each epoch cover the full split
+max_steps: null  # optional microbatch cap per epoch
+val_steps: null
+early_stopping_patience: 3
 early_stopping_min_delta: 1.0e-5
-lr: 1.0e-4
-warmup_steps: 200
+vision_lr: 5.0e-5
+gemma_lr: 5.0e-5
+expert_lr: 1.0e-4  # expert, image projection, CLS and value projection
+warmup_steps: 500
 weight_decay: 0.0
 clip_grad_norm: 1.0
-log_interval: 100
-max_samples: null
-max_steps: null  # optional batches per training epoch
-val_steps: null
-save_dir: checkpoints/optimized
+log_interval: 50
+save_dir: checkpoints/recap_patch

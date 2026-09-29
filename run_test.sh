@@ -1,8 +1,8 @@
 #!/bin/bash
-# 缓存一致性检查、完整测试集评估和报告；沿用指定 checkpoint 的配置。
+# 在线价值检查、完整测试集评估和报告；沿用指定 checkpoint 的配置。
 set -euo pipefail
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CHECKPOINT="checkpoints/optimized/best_model.pt"
+CHECKPOINT="checkpoints/recap_patch/best_model.pt"
 DRY_RUN=false
 while [[ $# -gt 0 ]]; do
     case "$1" in

@@ -1,6 +1,6 @@
 # 运行与输入输出接口
 
-本文按“准备数据 → 训练价值模型 → 测试 → 导出优势”的顺序说明当前本地流程。命令从仓库根目录执行，使用已有 `value_function` conda 环境；原始数据和 SigLIP 权重不随 Git 提交。相对路径在脚本中按仓库根目录解析。完整可选参数可运行对应脚本的 `--help` 查看。
+本文按“准备数据 → 训练价值模型 → 测试 → 导出优势”的顺序说明当前本地流程。命令从仓库根目录执行，使用已有 `value_function` conda 环境；原始数据与 SigLIP2、Gemma3 权重不随 Git 提交。相对路径在脚本中按仓库根目录解析。完整可选参数可运行对应脚本的 `--help` 查看。
 
 ## 1. 检查和适配数据
 
@@ -22,34 +22,33 @@ python scripts/prepare_data.py --all
 
 ## 2. 训练价值模型
 
-`config/train_value.yaml` 指向数据适配配置和本地 SigLIP2 权重。当前模型使用一台机器上的冻结视觉编码器及 201 档分类价值头，取档位期望为连续价值；不读取文字、状态或动作。训练集和验证集分别由清单限定，选择最低验证交叉熵（CE）的 checkpoint。
+`config/train_value.yaml` 是主流程配置，指定 SigLIP2、Gemma3 和任务分词器。SigLIP2 的每个图像块分别投影，与任务文字嵌入组成输入序列；小型 Gemma 价值专家通过可学习的 `CLS` 标记读取序列，预测 201 档价值分布及其连续期望。每路相机的有效位会进入前缀注意力掩码。默认使用 `gemma_1m` 专家，在线训练 SigLIP2、Gemma3 和价值专家；三部分均可单独冻结并设置学习率。`critic_expert_variant` 还支持 `gemma_50m`、`gemma_100m`、`gemma_150m`、`gemma_300m` 和 `gemma_2b`，更大专家需要另行验证显存。数据不输入关节状态或动作。训练集和验证集分别由清单限定，选择最低验证交叉熵（CE）的 checkpoint。方法上的前后差异见 [README](../README.md#方法变化改动前与改动后)。
 
 ```bash
 python scripts/train.py --smoke_test      # 小样本、独立冒烟产物
-python scripts/train.py --prepare-cache   # 仅生成 train/val 冻结特征
 python scripts/train.py                   # 完整训练
 ```
 
-常用覆盖项为 `--config`、`--save_dir`、`--num_epochs`、`--max_total_steps`、`--max_steps`、`--val_steps`、`--max_samples`、`--cache_num_workers`。`--no-cache` 从图像在线编码；当前本机首次构建缓存默认 `cache_num_workers=0`，避开此前验证集解码子进程异常退出的问题。已有缓存经过身份与 SHA256 校验后复用，目录由 `cache_dir` 指定。训练写入 `best_model.pt`、实际 `config.json` 和逐轮 `metrics.json`；默认在 `checkpoints/optimized/`。正式训练会更新该目录的 checkpoint，独立实验可指定新的 `--save_dir`。`run_train.sh` 顺序执行数据准备和训练，支持 `--smoke_test`、`--dry-run`。
+常用覆盖项为 `--config`、`--save_dir`、`--num_epochs`、`--max_total_steps`、`--max_steps`、`--val_steps`、`--max_samples`、`--vision_lr`、`--gemma_lr`、`--expert_lr`、`--gradient_accumulation_steps`，以及 `--freeze_vision_encoder`／`--no-freeze_vision_encoder`、`--freeze_vlm`／`--no-freeze_vlm`、`--freeze_value_expert`／`--no-freeze_value_expert`。默认使用 BF16、梯度检查点、批大小 4、累积 4 个微批次、最多 8 轮；每轮遍历完整划分，不设总优化步数上限。`max_total_steps` 计优化更新次数，`max_steps` 计每轮微批次数。当前模型在线读取图像，不能使用旧平均特征缓存；`--prepare-cache` 仅适用于旧架构。训练写入 `best_model.pt` 和逐轮 `metrics.json`；默认在 `checkpoints/recap_patch/`。正式训练会更新该目录的 checkpoint，独立实验可指定新的 `--save_dir`。`run_train.sh` 顺序执行数据准备和训练，支持 `--smoke_test`、`--dry-run`。
 
-当前本机已有 checkpoint 用**修正前**的目标分档规则训练；仓库现行规则只影响下次训练。本次文档整理没有重训或覆盖权重。
+`checkpoints/optimized/best_model.pt` 是历史平均特征基线；它的测试结果见 [旧版结果报告](results.md)，不能当作当前新模型的结果。
 
 ## 3. 独立测试与可视化
 
 ```bash
 bash run_test.sh --dry-run
-bash run_test.sh --checkpoint checkpoints/optimized/best_model.pt
+bash run_test.sh
 ```
 
-一键脚本依次运行 `submodules/check_cache.py`、`submodules/evaluate.py`、`submodules/render.py`；`--checkpoint` 会传给缓存检查和评估。`check_cache` 在少量真实帧上比较缓存与在线编码及 checkpoint 重载，可通过 `--output` 指定 JSON 结果。`evaluate` 对**完整 test** 预测，用 train 拟合简单对照，输出 `predictions.npz`、轨迹清单、`metrics.json` 和 `protocol.json`；`render` 由这些文件生成逐轨迹图、HTML 和总览，无需再次运行模型。评估需要原 CUDA/BF16 环境。单独调用时：
+一键脚本依次运行 `submodules/check_cache.py`、`submodules/evaluate.py`、`submodules/render.py`；`--checkpoint` 会传给检查和评估。当前模型的检查读取少量真实图像和任务文字，验证 checkpoint 重载与推理确定性；旧模型则比较缓存与在线编码。结果可通过 `--output` 指定 JSON 路径。`evaluate` 对**完整 test** 预测，用 train 拟合简单对照，输出 `predictions.npz`、轨迹清单、`metrics.json` 和 `protocol.json`；`render` 由这些文件生成逐轨迹图、HTML 和总览，无需再次运行模型。评估需要原 CUDA/BF16 环境。单独调用时：
 
 ```bash
-python submodules/evaluate.py --checkpoint checkpoints/optimized/best_model.pt \
+python submodules/evaluate.py --checkpoint checkpoints/recap_patch/best_model.pt \
   --output artifacts/evaluation/my-run
 python submodules/render.py artifacts/evaluation/my-run
 ```
 
-报告保存在 `artifacts/evaluation/`，不随 Git 推送。当前 checkpoint 的数字、对照和适用边界见 [结果报告](results.md)。`submodules/benchmark.py --mode loader|head|gpu` 用于性能测量；其中 `head` 需要训练特征缓存，`gpu` 需要 `submodules/reference/` 中的旧实现快照。
+报告保存在 `artifacts/evaluation/`，不随 Git 推送。新架构尚无正式训练结果；[旧版结果报告](results.md)只适用于旧 checkpoint。`submodules/benchmark.py --mode loader|head|gpu` 是历史基线的性能测量工具，其中 `head` 需要旧特征缓存，`gpu` 需要 `submodules/reference/` 中的旧实现快照。
 
 ## 4. 计算优势和标签
 
@@ -78,7 +77,7 @@ python scripts/calculate_advantage.py --reuse-values artifacts/advantage/test-ru
 
 | 参数 | 作用 |
 |---|---|
-| `--checkpoint` | 默认 `checkpoints/optimized/best_model.pt`；推理采用其中保存的相机、模型参数和预处理约定 |
+| `--checkpoint` | 默认 `checkpoints/recap_patch/best_model.pt`；推理采用其中保存的相机、模型参数、任务文字和预处理约定。可显式指定旧 checkpoint |
 | `--split train|val|test|all` | 默认 test；`all` 包含训练内评分，不能把它当独立测试 |
 | `--episode 数据集名:编号`、`--max-episodes N` | 选择完整轨迹，不截断帧；前者可重复 |
 | `--horizon N [N...]` | 一个或多个正整数，默认 50 |
@@ -91,7 +90,7 @@ python scripts/calculate_advantage.py --reuse-values artifacts/advantage/test-ru
 | `--write-back` | 原地覆盖原始帧文件并首次创建 `.bak`；改变缓存身份，后续会重新编码。仅在明确需要改原数据时使用 |
 | `--output DIR` | 输出新目录；拒绝覆盖非空目录 |
 
-分位阈值和接管置正规则是离线标签规则，正例并非“动作正确”的真值；人工接管前后曲线也只是描述性比较。纯遥操作示范数据目前**没有**作为独立类型强制标为正例。与 RLinf／论文的差异及已导出标签的实际分布见 [结果报告](results.md)。
+分位阈值和接管置正规则是离线标签规则，正例并非“动作正确”的真值；人工接管前后曲线也只是描述性比较。纯遥操作示范数据目前**没有**作为独立类型强制标为正例。[旧版结果报告](results.md)中的标签分布来自平均特征 checkpoint，不能外推至当前模型。
 
 输出文件包括：
 

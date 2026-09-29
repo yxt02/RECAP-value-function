@@ -41,7 +41,9 @@ BENCHMARK_DIR = 'artifacts/performance'
 CACHE_REPORT = 'artifacts/performance/cache-verification.json'
 
 # Each entry adds a `--<name>` flag overriding the same key in the training config.
-OVERRIDABLE = {'batch_size': int, 'num_epochs': int, 'lr': float, 'warmup_steps': int,
+OVERRIDABLE = {'batch_size': int, 'num_epochs': int, 'lr': float, 'vision_lr': float,
+               'gemma_lr': float, 'expert_lr': float, 'gradient_accumulation_steps': int,
+               'warmup_steps': int,
                'max_total_steps': int, 'early_stopping_patience': int, 'max_samples': int,
                'max_steps': int, 'val_steps': int, 'num_workers': int,
                'cache_batch_size': int, 'cache_num_workers': int, 'cached_batch_size': int, 'save_dir': str,
@@ -142,6 +144,11 @@ def build_scheduler(optimizer, total_steps, warmup_steps):
 
 def train(config, smoke_test=False, prepare_cache=False):
     """Train the value head, or build the feature caches and stop."""
+    if config.get('architecture') == 'recap_patch_gemma_expert':
+        if prepare_cache:
+            raise ValueError('RECAP patch training reads images online; --prepare-cache is unavailable')
+        from submodules.recap_workflow import train_recap
+        return train_recap(config, smoke_test=smoke_test)
     if smoke_test:
         config.update(**SMOKE_TEST,
                       cached_batch_size=min(64, config['cached_batch_size']),
@@ -267,7 +274,7 @@ def train(config, smoke_test=False, prepare_cache=False):
 
 def main_train(argv=None):
     """CLI for `value train`: parse config overrides and start training."""
-    p = argparse.ArgumentParser(description='训练视觉价值基线模型')
+    p = argparse.ArgumentParser(description='训练视觉与文字价值模型')
     p.add_argument('--config', default=DEFAULT_CONFIG, help='训练配置文件路径')
     p.add_argument('--smoke_test', action='store_true', help='使用小样本冒烟测试配置')
     p.add_argument('--prepare-cache', action='store_true', help='只构建特征缓存，不执行训练')

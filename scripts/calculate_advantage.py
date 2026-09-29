@@ -105,7 +105,7 @@ def update_info_features(destination, dataset, root, names, write_back):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--checkpoint', default='checkpoints/optimized/best_model.pt')
+    parser.add_argument('--checkpoint', default='checkpoints/recap_patch/best_model.pt')
     parser.add_argument('--split', choices=['train', 'val', 'test', 'all'], default='test')
     parser.add_argument('--horizon', nargs='+', type=int, default=[50])
     parser.add_argument('--threshold', type=float, default=0., help='Fixed threshold; strict > is advantage')
@@ -149,7 +149,7 @@ def main(argv=None):
     from submodules.advantage import (compute_advantage, intervention_windows, export_advantage_table,
                                       quantile_threshold, label_improvement)
     from submodules.cache import prepare_features, cache_location, cache_identity, sha256
-    from submodules.checkpoint import distribution_bins
+    from submodules.recap_model import ARCHITECTURE as RECAP_ARCHITECTURE
     from submodules.contracts import resolve_path, episode_returns
     from submodules.runtime import raw_dataset, configure_runtime, autocast
     from submodules.model import ValueModel
@@ -181,9 +181,15 @@ def main(argv=None):
     else:
         checkpoint = resolve_path(args.checkpoint)
         payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
-        bins = distribution_bins(payload)
+        recap_mode = payload.get('architecture') == RECAP_ARCHITECTURE
+        if recap_mode:
+            from submodules.recap_workflow import load_recap_checkpoint, predict_recap_dataset
+            bins = payload['config']['num_bins']
+        else:
+            from submodules.checkpoint import distribution_bins
+            bins = distribution_bins(payload)
         cfg = dict(payload['config'])
-        if not cfg['freeze_vlm']:
+        if not recap_mode and not cfg['freeze_vlm']:
             raise ValueError('This workflow requires the frozen encoder checkpoint')
         cfg.update(max_samples=None, max_steps=None, val_steps=None, cache_num_workers=0)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -197,23 +203,27 @@ def main(argv=None):
         for a,b in [('train','val'),('train','test'),('val','test')]:
             if keys[a] & keys[b]: raise ValueError('Overlapping split episodes')
         # Check current train membership against the membership stored in the checkpoint cache.
-        training_identity = (payload.get('feature_cache_manifest') or {}).get('identity', {})
-        if not training_identity or training_identity.get('subset_indices') is not None:
-            raise ValueError('Checkpoint lacks complete training membership provenance')
-        train_data = raw_dataset(cfg, 'train')
-        _, current_identity = cache_identity(train_data, cfg, 'train')
-        for field in ('weights', 'processor', 'model_config', 'cameras'):
-            if current_identity[field] != training_identity[field]:
-                raise ValueError(f'Encoder provenance changed: {field}')
-        recorded = {s['dataset']:s for s in training_identity['sources']}
-        if set(recorded) != {d.dataset_path.name for d in train_data.datasets}:
-            raise ValueError('Training dataset membership changed')
-        for ds in train_data.datasets:
-            saved = recorded[ds.dataset_path.name]
-            current = next(source for source in current_identity['sources'] if source['dataset'] == ds.dataset_path.name)
-            if json.dumps(current, sort_keys=True) != json.dumps(saved, sort_keys=True):
-                raise ValueError('Training data, membership, preprocessing or return contract changed since checkpoint')
-            ds.close()
+        if recap_mode:
+            if payload.get('split_sha256') != {s:sha256(split_root/f'{s}.json') for s in splits}:
+                raise ValueError('RECAP checkpoint was trained with different split manifests')
+        else:
+            training_identity = (payload.get('feature_cache_manifest') or {}).get('identity', {})
+            if not training_identity or training_identity.get('subset_indices') is not None:
+                raise ValueError('Checkpoint lacks complete training membership provenance')
+            train_data = raw_dataset(cfg, 'train')
+            _, current_identity = cache_identity(train_data, cfg, 'train')
+            for field in ('weights', 'processor', 'model_config', 'cameras'):
+                if current_identity[field] != training_identity[field]:
+                    raise ValueError(f'Encoder provenance changed: {field}')
+            recorded = {s['dataset']:s for s in training_identity['sources']}
+            if set(recorded) != {d.dataset_path.name for d in train_data.datasets}:
+                raise ValueError('Training dataset membership changed')
+            for ds in train_data.datasets:
+                saved = recorded[ds.dataset_path.name]
+                current = next(source for source in current_identity['sources'] if source['dataset'] == ds.dataset_path.name)
+                if json.dumps(current, sort_keys=True) != json.dumps(saved, sort_keys=True):
+                    raise ValueError('Training data, membership, preprocessing or return contract changed since checkpoint')
+                ds.close()
         selected_splits = ['train','val','test'] if args.split == 'all' else [args.split]
         wanted = set()
         for entry in args.episode:
@@ -223,10 +233,13 @@ def main(argv=None):
         if wanted - candidates: raise ValueError(f'Episodes outside selection: {wanted-candidates}')
         manifest = dict(schema_version=1, checkpoint=str(checkpoint), checkpoint_sha256=sha256(checkpoint),
                         config=cfg, return_scale=adaptation['return_scale'], gamma=adaptation['gamma'],
-                        split=args.split, training_membership_checked=True,
+                        split=args.split, training_membership_checked=not (recap_mode and payload.get('smoke_test')),
+                        checkpoint_smoke_test=bool(payload.get('smoke_test', False)),
                         interpretation='Model scores, not action ground truth; validation may have selected checkpoint.',
                         splits_sha256={s:sha256(split_root/f'{s}.json') for s in splits}, caches=[])
         rows=[]; count=0; encoder=None
+        if recap_mode:
+            encoder = load_recap_checkpoint(payload, device)
         for split in selected_splits:
             data = raw_dataset(cfg, split)
             metadata = {(e['dataset'],e['episode_index']):e for e in splits[split]['episodes']}
@@ -260,27 +273,32 @@ def main(argv=None):
                 for ds in data.datasets: ds.close()
                 continue
             selected = data if len(indices)==len(data) else Subset(data,indices)
-            path,digest,_=cache_location(selected,cfg,split)
-            if encoder is None:
-                encoder=ValueModel(str(resolve_path(cfg['siglip_path'])),cfg['cameras'],True,
-                    cfg['precision'],cfg['projection_dim'],num_bins=bins,
-                    load_encoder=not (path/'manifest.json').exists()).to(device).eval()
-            if not (path/'manifest.json').exists() and encoder.siglip is None:
-                encoder=ValueModel(str(resolve_path(cfg['siglip_path'])),cfg['cameras'],True,
-                    cfg['precision'],cfg['projection_dim'],num_bins=bins).to(device).eval()
-            cached=prepare_features(selected,encoder,cfg,split,device)
-            head=ValueModel(str(resolve_path(cfg['siglip_path'])),cfg['cameras'],True,
-                cfg['precision'],cfg['projection_dim'],load_encoder=False,num_bins=bins).to(device).eval()
-            head.load_state_dict(payload['model_state_dict'],strict=True)
-            predictions=[]
-            with torch.inference_mode(),autocast(cfg,device):
-                for start in range(0,len(cached),cfg['cached_batch_size']):
-                    predictions.append(head(features=cached.features[start:start+cfg['cached_batch_size']].to(device)).float().cpu().numpy().ravel())
-            part=pd.concat(records,ignore_index=True); part['value']=np.concatenate(predictions)
+            if recap_mode:
+                predictions = predict_recap_dataset(encoder, selected, cfg, device)
+            else:
+                path,digest,_=cache_location(selected,cfg,split)
+                if encoder is None:
+                    encoder=ValueModel(str(resolve_path(cfg['siglip_path'])),cfg['cameras'],True,
+                        cfg['precision'],cfg['projection_dim'],num_bins=bins,
+                        load_encoder=not (path/'manifest.json').exists()).to(device).eval()
+                if not (path/'manifest.json').exists() and encoder.siglip is None:
+                    encoder=ValueModel(str(resolve_path(cfg['siglip_path'])),cfg['cameras'],True,
+                        cfg['precision'],cfg['projection_dim'],num_bins=bins).to(device).eval()
+                cached=prepare_features(selected,encoder,cfg,split,device)
+                head=ValueModel(str(resolve_path(cfg['siglip_path'])),cfg['cameras'],True,
+                    cfg['precision'],cfg['projection_dim'],load_encoder=False,num_bins=bins).to(device).eval()
+                head.load_state_dict(payload['model_state_dict'],strict=True)
+                predictions=[]
+                with torch.inference_mode(),autocast(cfg,device):
+                    for start in range(0,len(cached),cfg['cached_batch_size']):
+                        predictions.append(head(features=cached.features[start:start+cfg['cached_batch_size']].to(device)).float().cpu().numpy().ravel())
+                predictions=np.concatenate(predictions)
+                manifest['caches'].append(dict(split=split,path=str(path),digest=digest))
+                del head,cached
+            part=pd.concat(records,ignore_index=True); part['value']=predictions
             if not np.isfinite(part.value).all() or not part.value.between(-1,0).all(): raise ValueError('Invalid value predictions')
-            rows.append(part);manifest['caches'].append(dict(split=split,path=str(path),digest=digest))
+            rows.append(part)
             for ds in data.datasets: ds.close()
-            del head,cached
         if not rows: raise ValueError('Empty selection')
         values=pd.concat(rows,ignore_index=True)
         if sha256(checkpoint)!=manifest['checkpoint_sha256']: raise ValueError('Checkpoint changed during inference')

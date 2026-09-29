@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""验证缓存特征与在线编码的一致性。
+"""检查当前价值模型；旧平均特征 checkpoint 还会检查缓存一致性。
 
 用法：
-    python tests/check_cache.py
-    python tests/check_cache.py --output artifacts/performance/my-check.json
+    python submodules/check_cache.py
+    python submodules/check_cache.py --output artifacts/performance/my-check.json
 
 详见 docs/usage.md。
 """
@@ -33,26 +33,58 @@ logger = logging.getLogger(__name__)
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='验证缓存特征与在线编码的一致性')
+    parser = argparse.ArgumentParser(description='检查在线价值预测与 checkpoint；旧模型还检查缓存')
     parser.add_argument('--config', default=DEFAULT_CONFIG, help='训练配置文件路径')
     parser.add_argument('--output', default=CACHE_REPORT, help='输出 JSON 文件路径')
     parser.add_argument('--checkpoint', help='检查指定 checkpoint；使用其保存的配置')
     args = parser.parse_args(argv)
 
     print('=' * 60)
-    print('[缓存检查] 开始执行')
+    print('[价值检查] 开始执行')
     print('=' * 60)
-    print(f'[缓存检查] 配置文件: {args.config}')
-    print(f'[缓存检查] 输出文件: {args.output}')
+    print(f'[价值检查] 配置文件: {args.config}')
+    print(f'[价值检查] 输出文件: {args.output}')
     print('-' * 60)
 
     cfg = load_config(args.config)
     checkpoint = resolve_path(args.checkpoint) if args.checkpoint else resolve_path(cfg['save_dir']) / 'best_model.pt'
-    if args.checkpoint:
+    if checkpoint.exists():
         payload = torch.load(checkpoint, map_location='cpu', weights_only=False)
+        from submodules.recap_model import ARCHITECTURE as RECAP_ARCHITECTURE
+        if payload.get('architecture') == RECAP_ARCHITECTURE:
+            from submodules.recap_workflow import load_recap_checkpoint
+            from torch.utils.data import Subset
+            cfg = payload['config']
+            configure_runtime(cfg)
+            ds = raw_dataset(cfg, 'train')
+            sample = Subset(ds, [0, len(ds) - 1])
+            loader = make_loader(sample, cfg, 'val', batch_size=1, workers=0, sequential=True)
+            model = load_recap_checkpoint(payload, torch.device('cuda'))
+            values = []
+            with torch.inference_mode():
+                for batch in loader:
+                    images = {k: v.cuda() for k, v in batch['images'].items()}
+                    first = model(images, batch['prompt'], image_masks=batch['image_masks'])
+                    second = model(images, batch['prompt'], image_masks=batch['image_masks'])
+                    torch.testing.assert_close(first, second, atol=0, rtol=0)
+                    values.append(float(first.item()))
+            if not all(-1 <= value <= 0 for value in values):
+                raise ValueError('Invalid RECAP value')
+            report = dict(architecture=RECAP_ARCHITECTURE, verified_frames=len(values),
+                          checkpoint_reload='passed', deterministic_forward=True,
+                          values=values, cache='not used')
+            output = resolve_path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(json.dumps(report, indent=2) + '\n')
+            for source in (ds.dataset if hasattr(ds, 'dataset') else ds).datasets:
+                source.close()
+            print(f'[价值检查] 在线推理及 checkpoint 重载通过: {output}')
+            return
         from submodules.checkpoint import distribution_bins
         bins = distribution_bins(payload)
         cfg = {**payload['config'], 'num_bins': bins}
+    elif cfg.get('architecture') == 'recap_patch_gemma_expert':
+        raise FileNotFoundError(f'RECAP checkpoint 不存在: {checkpoint}')
     configure_runtime(cfg)
     ds = raw_dataset(cfg, 'train')
     path, digest, _ = cache_location(ds, cfg, 'train')

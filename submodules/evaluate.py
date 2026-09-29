@@ -3,7 +3,7 @@
 
 用法：
     python tests/evaluate.py
-    python tests/evaluate.py --checkpoint checkpoints/optimized/best_model.pt
+    python submodules/evaluate.py --checkpoint checkpoints/recap_patch/best_model.pt
     python tests/evaluate.py --output artifacts/evaluation/my-run
 
 详见 docs/usage.md。
