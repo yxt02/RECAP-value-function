@@ -1,0 +1,44 @@
+# 依赖清单（环境配置依据）：记录 value_function 环境中实测通过的版本。
+# 仓库本身不是 Python 包，脚本从仓库根目录直接运行；本文件仅用于快速重建环境：
+#
+#   conda create -n value_function python=3.11 -y
+#   conda activate value_function
+#   pip install .            # 安装下方核心依赖（PyPI 默认即 torch 2.7.1 + CUDA 12.6 轮子）
+#   pip install .[plot]      # 额外安装报告绘图依赖（等价 requirements-plotting.txt）
+#
+# 原始数据与 SigLIP2/Gemma3 权重不随 Git 提交，需另行放置于 data/ 与 models/。
+# 注意：所有入口必须先 `import submodules` 再导入 numpy/torch 等（BLAS 单线程规避，
+# 见 CLAUDE.md 的 Import-order rule）。
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recap-value-function"
+version = "0.1.0"
+description = "Standalone RECAP value function for z02 robot data (data adaptation, training, evaluation, advantage export)"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+    "transformers==4.57.6",
+    "safetensors==0.8.0",
+    "numpy==2.2.6",
+    "pandas==2.3.3",
+    "pyarrow==25.0.1",
+    "opencv-python==4.11.0.86",
+    "pillow==12.3.0",
+    "omegaconf==2.3.1",
+    "PyYAML==6.0.3",
+]
+
+[project.optional-dependencies]
+# 报告 HTML/图渲染（submodules/evaluation_workflow.py 的 matplotlib 路径）
+plot = [
+    "matplotlib==3.10.9",
+]
+
+[tool.setuptools]
+# 空包声明：pip install . 只安装依赖，不安装代码（脚本依赖 sys.path 根目录引导）。
+packages = []
