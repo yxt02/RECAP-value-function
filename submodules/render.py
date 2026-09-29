@@ -4,7 +4,7 @@
 用法：
     python tests/render.py artifacts/evaluation/<run>
 
-详见 docs/scripts.md。
+详见 docs/usage.md。
 """
 import argparse
 import logging

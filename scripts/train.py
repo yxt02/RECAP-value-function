@@ -8,7 +8,7 @@
     python scripts/train.py --no-cache             # 在线编码训练
     python scripts/train.py --num_epochs 5         # 覆盖轮数
 
-详见 docs/scripts.md。
+详见 docs/usage.md。
 """
 import argparse
 import json

@@ -6,7 +6,7 @@ Features:
   - compute return labels and episode outcomes
   - generate train/val/test splits
 
-See docs/scripts.md for input/output contracts.
+See docs/usage.md for input/output contracts.
 """
 import argparse
 from collections import Counter, defaultdict
@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Before numpy/cv2: submodules sets single-threaded BLAS, which this environment
-# needs for the heavy imports below not to crash. See docs/scripts.md.
+# needs for the heavy imports below not to crash. See docs/usage.md.
 import submodules  # noqa: F401
 
 import cv2

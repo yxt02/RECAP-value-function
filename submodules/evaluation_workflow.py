@@ -4,7 +4,7 @@
     python scripts/evaluation_workflow.py evaluate --checkpoint checkpoints/optimized/best_model.pt
     python scripts/evaluation_workflow.py render artifacts/evaluation/<run>
 
-See docs/scripts.md for the input/output contracts.
+See docs/usage.md for the input/output contracts.
 """
 import argparse
 from datetime import datetime, timezone

@@ -6,7 +6,7 @@
     python tests/evaluate.py --checkpoint checkpoints/optimized/best_model.pt
     python tests/evaluate.py --output artifacts/evaluation/my-run
 
-详见 docs/scripts.md。
+详见 docs/usage.md。
 """
 import argparse
 import json

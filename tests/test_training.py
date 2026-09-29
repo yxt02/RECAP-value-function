@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 # Imported before numpy/torch/transformers: submodules sets single-threaded BLAS, which
-# this environment needs for those imports not to crash. See docs/scripts.md.
+# this environment needs for those imports not to crash. See docs/usage.md.
 from submodules.cache import FeatureDataset, sha256, cache_identity, prepare_features
 from submodules.model import ValueModel
 from submodules.runtime import make_loader

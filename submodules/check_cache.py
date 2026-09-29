@@ -5,7 +5,7 @@
     python tests/check_cache.py
     python tests/check_cache.py --output artifacts/performance/my-check.json
 
-详见 docs/scripts.md。
+详见 docs/usage.md。
 """
 import argparse
 import json

@@ -6,7 +6,7 @@
     python tests/benchmark.py --mode loader   # 数据加载器
     python tests/benchmark.py --mode head     # 缓存头训练
 
-详见 docs/scripts.md。
+详见 docs/usage.md。
 """
 import argparse
 import gc

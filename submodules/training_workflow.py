@@ -6,7 +6,7 @@ Subcommands:
   benchmark   - measure GPU, data loader or cached-head throughput
   check-cache - verify cache/online agreement and checkpoint reload
 
-This is not the language-conditioned 201-bin RECAP critic. See docs/scripts.md.
+This is not the language-conditioned 201-bin RECAP critic. See docs/usage.md.
 """
 import argparse
 import gc
@@ -21,7 +21,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 # Before numpy/torch: submodules sets single-threaded BLAS, which this environment
-# needs for the heavy imports below not to crash. See docs/scripts.md.
+# needs for the heavy imports below not to crash. See docs/usage.md.
 import submodules  # noqa: F401
 
 import torch

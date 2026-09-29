@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 # Imported before numpy: submodules sets single-threaded BLAS, which this environment
-# needs for the heavy imports not to crash. See docs/scripts.md.
+# needs for the heavy imports not to crash. See docs/usage.md.
 from submodules.evaluation import regression,paired_episode_bootstrap,fit_baselines,apply_baselines,temporal_metrics
 
 import numpy as np

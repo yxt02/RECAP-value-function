@@ -6,7 +6,7 @@
     python scripts/prepare_data.py --all               # 完整执行
     python scripts/prepare_data.py --all --verify-videos  # 含视频验证
 
-详见 docs/scripts.md。
+详见 docs/usage.md。
 """
 import argparse
 import sys
