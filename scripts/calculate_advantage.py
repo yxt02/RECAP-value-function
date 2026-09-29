@@ -232,7 +232,9 @@ def main(argv=None):
         candidates = set().union(*(keys[s] for s in selected_splits))
         if wanted - candidates: raise ValueError(f'Episodes outside selection: {wanted-candidates}')
         manifest = dict(schema_version=1, checkpoint=str(checkpoint), checkpoint_sha256=sha256(checkpoint),
-                        config=cfg, return_scale=adaptation['return_scale'], gamma=adaptation['gamma'],
+                        config=cfg, return_scale=cfg.get('value_scale', adaptation['return_scale']),
+                        value_normalization=cfg.get('value_normalization', 'contract_scale'),
+                        gamma=adaptation['gamma'],
                         split=args.split, training_membership_checked=not (recap_mode and payload.get('smoke_test')),
                         checkpoint_smoke_test=bool(payload.get('smoke_test', False)),
                         interpretation='Model scores, not action ground truth; validation may have selected checkpoint.',

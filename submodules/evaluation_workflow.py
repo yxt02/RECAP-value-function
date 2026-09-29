@@ -78,7 +78,7 @@ def split_metadata(data, split):
                 slug=f'{ds.dataset_path.name}-ep{ep:06d}',
                 raw_terminal_reward=entry['raw_terminal_reward']
             ))
-            targets.append(np.asarray(ds.returns_data[ep]['return'], dtype=np.float64) / ds.return_scale)
+            targets.append(ds.normalized_returns(ep))
             offset += n
 
     if offset != len(data):

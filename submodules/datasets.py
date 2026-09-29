@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset
 from torchvision import transforms
+from torch.nn import functional as F
 
 from .contracts import load_normalization, read_split
 
@@ -18,6 +19,22 @@ logger = logging.getLogger(__name__)
 
 MEAN = STD = [0.5] * 3  # Match the processor bundled with SigLIP; no ImageNet normalization.
 CONTRACT_KEYS = ('tag', 'gamma', 'failure_reward', 'return_scale', 'max_episode_steps')
+
+
+def resize_with_pad(image, size):
+    """Resize an RGB uint8 frame without changing its aspect ratio, then pad black."""
+    height, width = image.shape[:2]
+    if height < 1 or width < 1 or image.ndim != 3 or image.shape[2] != 3:
+        raise ValueError('Expected a nonempty HWC RGB frame')
+    scale = max(width / size, height / size)
+    new_height, new_width = max(1, int(height / scale)), max(1, int(width / scale))
+    frame = torch.from_numpy(np.ascontiguousarray(image)).permute(2, 0, 1).unsqueeze(0).float()
+    resized = F.interpolate(frame, size=(new_height, new_width), mode='bilinear',
+                            align_corners=False).round().clamp_(0, 255).squeeze(0) / 255.0
+    left = (size - new_width) // 2
+    top = (size - new_height) // 2
+    return F.pad(resized, (left, size - new_width - left,
+                           top, size - new_height - top), value=0.0)
 
 
 def load_returns_sidecar(dataset_path, tag=None):
@@ -49,7 +66,8 @@ class SimpleValueDataset(Dataset):
                  normalize_returns=True, image_size=224, cameras=None,
                  split_file=None, episodes=None, return_scale=None,
                  include_state=True, include_actions=True, min_episode_steps=2,
-                 image_processor_path=None, cache_episodes=4, cache_videos=6, decoder_threads=1):
+                 image_processor_path=None, cache_episodes=4, cache_videos=6, decoder_threads=1,
+                 augment_images=False, clip_normalized_returns=False):
         self._video_caps, self._episode_cache = OrderedDict(), OrderedDict()
         self._pid = os.getpid()
         self.decoder_threads = max(1, int(decoder_threads))
@@ -73,9 +91,10 @@ class SimpleValueDataset(Dataset):
                              'use image/text only (include_state=False, include_actions=False)')
         self.joint_indices = self.adaptation['joint_indices'] if self.adaptation else None
         self.return_scale, self.contract = return_scale, None
+        self.clip_normalized_returns = bool(clip_normalized_returns)
         if normalize_returns:
+            self.contract = load_normalization(self.dataset_path, tag)
             if return_scale is None:
-                self.contract = load_normalization(self.dataset_path, tag)
                 self.return_scale = float(self.contract['return_scale'])
             if not np.isfinite(self.return_scale) or self.return_scale <= 0:
                 raise ValueError('Return scale must be positive and finite')
@@ -106,7 +125,8 @@ class SimpleValueDataset(Dataset):
                 raise ValueError(f'Incomplete labels for {path}')
             if not np.isfinite(labels['return']).all():
                 raise ValueError(f'Non-finite labels for {path}')
-            if normalize_returns and (np.min(labels['return']) < -self.return_scale or np.max(labels['return']) > 0):
+            if normalize_returns and ((not self.clip_normalized_returns and np.min(labels['return']) < -self.return_scale)
+                                      or np.max(labels['return']) > 0):
                 raise ValueError(f'Labels outside [-return_scale,0]: {path}; use matching contract')
             for cam in self.cameras:
                 if not self.video_path(cam, episode).is_file():
@@ -126,9 +146,30 @@ class SimpleValueDataset(Dataset):
         if image_processor_path:
             processor = json.loads((Path(image_processor_path) / 'preprocessor_config.json').read_text())
             mean, std = processor['image_mean'], processor['image_std']
-        self.image_transform = transforms.Compose([
-            transforms.ToPILImage(), transforms.Resize((image_size, image_size), interpolation=transforms.InterpolationMode.BILINEAR),
-            transforms.ToTensor(), transforms.Normalize(mean, std)])
+        self.image_size = int(image_size)
+        self.augment_images = bool(augment_images)
+        self.color_jitter = transforms.ColorJitter(brightness=(0.7, 1.3), contrast=(0.6, 1.4),
+                                                    saturation=(0.5, 1.5))
+        self.normalize_image = transforms.Normalize(mean, std)
+        self.preprocessing_config = dict(version='letterbox-v1', image_size=self.image_size,
+                                         mean=list(mean), std=list(std),
+                                         augment_images=self.augment_images,
+                                         normalize_returns=self.normalize_returns,
+                                         return_scale=self.return_scale,
+                                         clip_normalized_returns=self.clip_normalized_returns)
+
+    def _transform_image(self, image, camera):
+        image = resize_with_pad(image, self.image_size)
+        if self.augment_images:
+            if 'wrist' not in camera:
+                crop = int(self.image_size * 0.95)
+                image = transforms.RandomCrop(crop)(image)
+                image = transforms.Resize((self.image_size, self.image_size),
+                                          interpolation=transforms.InterpolationMode.BILINEAR)(image)
+                image = transforms.RandomRotation(5, interpolation=transforms.InterpolationMode.BILINEAR,
+                                                  fill=0.0)(image)
+            image = self.color_jitter(image).clamp_(0.0, 1.0)
+        return self.normalize_image(image)
 
     def video_path(self, cam, episode):
         return self.dataset_path / self.info['video_path'].format(
@@ -176,6 +217,13 @@ class SimpleValueDataset(Dataset):
     def __len__(self):
         return len(self.index_mapping)
 
+    def normalized_returns(self, episode):
+        values = np.asarray(self.returns_data[episode]['return'], dtype=np.float64)
+        if not self.normalize_returns:
+            return values
+        values = values / self.return_scale
+        return np.clip(values, -1.0, 0.0) if self.clip_normalized_returns else values
+
     def __getitem__(self, index):
         episode, frame = map(int, self.index_mapping[index])
         self._reset_worker_cache()
@@ -183,11 +231,14 @@ class SimpleValueDataset(Dataset):
             episode_data = self._episode(episode); row = episode_data.iloc[frame]
         value = float(self.returns_data[episode]['return'][frame])
         sample = {
-            'images': {f'observation.images.{cam}': self.image_transform(self._read_video_frame(cam, episode, frame))
+            'images': {f'observation.images.{cam}': self._transform_image(
+                           self._read_video_frame(cam, episode, frame), cam)
                        for cam in self.cameras},
             'image_masks': {f'observation.images.{cam}': True for cam in self.cameras},
             'prompt': self.tasks[int(self._task_indices[episode][frame])],
-            'target_values': value / self.return_scale if self.normalize_returns else value,
+            'target_values': float(np.clip(value / self.return_scale, -1.0, 0.0))
+                             if self.normalize_returns and self.clip_normalized_returns else
+                             (value / self.return_scale if self.normalize_returns else value),
             'dataset_id': self.dataset_path.name, 'episode_index': episode, 'frame_index': frame,
         }
         if self.include_state:

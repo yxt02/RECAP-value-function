@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
-"""Training workflows for the frozen-encoder scalar value baseline.
+"""Training dispatch and compatibility workflows for the mean-feature baseline.
 
-Subcommands:
-  train       - fit the regression head; --prepare-cache only builds feature caches
-  benchmark   - measure GPU, data loader or cached-head throughput
-  check-cache - verify cache/online agreement and checkpoint reload
-
-This is not the language-conditioned 201-bin RECAP critic. See docs/usage.md.
+The current RECAP architecture delegates to recap_workflow.train_recap.
+The remaining training/cache/benchmark functions serve the legacy architecture.
+See docs/usage.md for the supported entry points and compatibility boundary.
 """
 import argparse
 import gc

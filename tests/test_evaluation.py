@@ -20,7 +20,8 @@ class EvaluationTests(unittest.TestCase):
             (root/'data/splits/test.json').write_text(json.dumps({'episodes':[
                 dict(dataset='A',episode_index=1,total_frames=3,is_success=True,raw_terminal_reward=0)]}))
             ds=SimpleNamespace(dataset_path=Path('A'),episode_ids=[1],returns_data={1:{'return':np.array([-2.,-1.,0.])}},
-                               info={'fps':30},return_scale=4000)
+                               info={'fps':30},return_scale=4000,
+                               normalized_returns=lambda ep:np.array([-2.,-1.,0.])/4000)
             class Data:
                 datasets=[ds]
                 def __len__(self): return 3

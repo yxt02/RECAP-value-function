@@ -11,6 +11,7 @@
 import argparse
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 
@@ -43,10 +44,11 @@ def main(argv=None):
                 'gradient_checkpointing'):
         p.add_argument('--' + key, action=argparse.BooleanOptionalAction, default=None)
     args = p.parse_args(argv)
+    report = print if os.environ.get('RANK', '0') == '0' else lambda *args, **kwargs: None
 
-    print('=' * 60)
-    print('[训练] 开始执行')
-    print('=' * 60)
+    report('=' * 60)
+    report('[训练] 开始执行')
+    report('=' * 60)
 
     config = load_config(args.config)
     for key, value in vars(args).items():
@@ -57,33 +59,33 @@ def main(argv=None):
         config['feature_cache'] = False
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    print(f'[训练] 设备: {device}')
-    print(f'[训练] 配置文件: {args.config}')
-    print(f'[训练] 保存目录: {config.get("save_dir", "checkpoints/recap_patch")}')
+    report(f'[训练] 设备: {device}')
+    report(f'[训练] 配置文件: {args.config}')
+    report(f'[训练] 保存目录: {config.get("save_dir", "checkpoints/recap_patch")}')
 
     if args.smoke_test:
-        print('[训练] 模式: 冒烟测试（小样本快速验证）')
+        report('[训练] 模式: 冒烟测试（小样本快速验证）')
     elif args.prepare_cache:
-        print('[训练] 模式: 只构建特征缓存')
+        report('[训练] 模式: 只构建特征缓存')
     elif args.no_cache:
-        print('[训练] 模式: 在线编码训练（无缓存）')
+        report('[训练] 模式: 在线编码训练（无缓存）')
     else:
         step_limit = config.get('max_total_steps')
         limit_text = '不设总步数上限' if step_limit is None else f'最多 {step_limit} 次参数更新'
-        print(f'[训练] 模式: 标准训练（最多 {config["num_epochs"]} 轮，{limit_text}）')
+        report(f'[训练] 模式: 标准训练（最多 {config["num_epochs"]} 轮，{limit_text}）')
 
-    print(f'[训练] 特征缓存: {"启用" if config.get("feature_cache") else "禁用"}')
-    print(f'[训练] 精度: {config.get("precision", "bf16")}')
+    report(f'[训练] 特征缓存: {"启用" if config.get("feature_cache") else "禁用"}')
+    report(f'[训练] 精度: {config.get("precision", "bf16")}')
     batch_size = (1 if args.smoke_test and config.get('architecture') == 'recap_patch_gemma_expert'
                   else config.get('cached_batch_size' if config.get('feature_cache') else 'batch_size', 16))
-    print(f'[训练] 批大小: {batch_size}')
-    print('-' * 60)
+    report(f'[训练] 每卡批大小: {batch_size}; GPU 数: {os.environ.get("WORLD_SIZE", "1")}')
+    report('-' * 60)
 
     train(config, smoke_test=args.smoke_test, prepare_cache=args.prepare_cache)
 
-    print('-' * 60)
-    print('[训练] 执行完成')
-    print('=' * 60)
+    report('-' * 60)
+    report('[训练] 执行完成')
+    report('=' * 60)
 
 
 if __name__ == '__main__':

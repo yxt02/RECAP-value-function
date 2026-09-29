@@ -1,11 +1,14 @@
 """Checks for the new distribution target, independent of pretrained weights."""
 import unittest
+from unittest.mock import patch
+import types
 
+import submodules  # set BLAS limits before heavy imports
 import torch
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, Gemma3TextConfig, Gemma3ForCausalLM, SiglipVisionConfig, SiglipVisionModel
 from pathlib import Path
 
-from submodules.recap_model import tokenize_task_prompts, two_hot_loss
+from submodules.recap_model import RecapValueModel, EXPERT_VARIANTS, tokenize_task_prompts, two_hot_loss
 from submodules.recap_workflow import optimizer_groups, run_recap_epoch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +51,56 @@ class RecapTargetTests(unittest.TestCase):
 
 
 class RecapTrainingTests(unittest.TestCase):
+    def tiny_model(self, depth=3):
+        vision = SiglipVisionModel(SiglipVisionConfig(hidden_size=16, intermediate_size=32,
+                    num_hidden_layers=2, num_attention_heads=2, image_size=28, patch_size=14))
+        gemma = Gemma3ForCausalLM(Gemma3TextConfig(vocab_size=32, hidden_size=32,
+                    intermediate_size=64, num_hidden_layers=3, num_attention_heads=1,
+                    num_key_value_heads=1, head_dim=256, layer_types=['full_attention']*3))
+        tokenizer = types.SimpleNamespace(pad_token_id=0, encode=lambda *a, **kw: [1,2,3])
+        cfg = dict(num_bins=201, precision='fp32', cameras=['cam2'], siglip_path='unused',
+                   gemma3_path='unused', critic_expert_variant='test', max_token_len=5)
+        with patch.dict(EXPERT_VARIANTS, test=dict(hidden_size=16, intermediate_size=32,
+                        num_hidden_layers=depth, num_attention_heads=1, num_key_value_heads=1, head_dim=256)), \
+             patch('submodules.recap_model.SiglipVisionModel.from_pretrained', return_value=vision), \
+             patch('submodules.recap_model.Gemma3ForCausalLM.from_pretrained', return_value=gemma), \
+             patch('submodules.recap_model.AutoTokenizer.from_pretrained', return_value=tokenizer):
+            return RecapValueModel(cfg)
+
+    def test_checkpoint_recomputes_and_preserves_outputs_and_gradients(self):
+        model = self.tiny_model().train()
+        images = {'observation.images.cam2': torch.randn(1,3,28,28)}
+        outputs, gradients, counts = [], [], []
+        for enabled in (False, True):
+            model.zero_grad(set_to_none=True)
+            model.gradient_checkpointing_enable() if enabled else model.gradient_checkpointing_disable()
+            calls = []
+            hook = model.gemma3.model.layers[0].register_forward_pre_hook(lambda *args: calls.append(1))
+            _, logits = model(images, ['task'], True)
+            two_hot_loss(logits, torch.tensor([-0.3]), model.atoms).backward()
+            hook.remove()
+            outputs.append(logits.detach())
+            gradients.append({n:p.grad.clone() for n,p in model.named_parameters() if p.grad is not None})
+            counts.append(len(calls))
+        self.assertEqual(counts, [1,2])
+        torch.testing.assert_close(outputs[0],outputs[1])
+        self.assertEqual(gradients[0].keys(),gradients[1].keys())
+        for name in gradients[0]:
+            torch.testing.assert_close(gradients[0][name],gradients[1][name])
+        self.assertGreater(gradients[1]['gemma3.model.layers.2.self_attn.k_proj.weight'].abs().sum(),0)
+
+    def test_shallow_expert_skips_unread_prefix_layers(self):
+        model = self.tiny_model(depth=2)
+        calls=[]
+        hook=model.gemma3.model.layers[2].register_forward_pre_hook(lambda *a: calls.append(1))
+        images={'observation.images.cam2':torch.randn(1,3,28,28)}
+        shortened=model(images,['task'])
+        hook.remove()
+        self.assertEqual(calls,[])
+        self.assertFalse(any(p.requires_grad for p in model.gemma3.model.layers[2].parameters()))
+        model.gemma3.config.num_hidden_layers=3
+        torch.testing.assert_close(shortened,model(images,['task']),atol=0,rtol=0)
+
     def test_independent_optimizer_groups_respect_frozen_parameters(self):
         class TinyModel(torch.nn.Module):
             def __init__(self):

@@ -13,7 +13,8 @@ from unittest.mock import patch
 # this environment needs for those imports not to crash. See docs/usage.md.
 from submodules.cache import FeatureDataset, sha256, cache_identity, prepare_features
 from submodules.model import ValueModel
-from submodules.runtime import make_loader
+from submodules.runtime import load_config, make_loader, raw_dataset, train_return_scale
+from submodules.datasets import resize_with_pad
 from submodules.feature_loader import DeviceFeatureLoader
 
 import numpy as np
@@ -39,6 +40,35 @@ class FakeVision(nn.Module):
 
 
 class TrainingTests(unittest.TestCase):
+    def test_letterbox_preserves_aspect_ratio(self):
+        image = np.full((2, 4, 3), 255, dtype=np.uint8)
+        padded = resize_with_pad(image, 8)
+        self.assertEqual(tuple(padded.shape), (3, 8, 8))
+        self.assertTrue(torch.eq(padded[:, :2], 0).all())
+        self.assertTrue(torch.eq(padded[:, 2:6], 1).all())
+        self.assertTrue(torch.eq(padded[:, 6:], 0).all())
+
+    def test_train_only_augmentation_and_shared_minimum_scale(self):
+        cfg = load_config('config/train_value.yaml')
+        cfg['max_samples'] = 2
+        self.assertEqual(train_return_scale(cfg), 3769.0)
+        train = raw_dataset(cfg, 'train', training=True)
+        train_inference = raw_dataset(cfg, 'train')
+        val = raw_dataset(cfg, 'val')
+        try:
+            self.assertEqual(train.dataset.datasets[0].cameras, ['cam2', 'cam3', 'cam4'])
+            self.assertTrue(train.dataset.datasets[0].augment_images)
+            self.assertFalse(train_inference.dataset.datasets[0].augment_images)
+            self.assertFalse(val.dataset.datasets[0].augment_images)
+            self.assertEqual(train.dataset.datasets[0].return_scale, 3769.0)
+            self.assertEqual(val.dataset.datasets[0].return_scale, 3769.0)
+            self.assertTrue(all(np.min(ds.normalized_returns(ep)) >= -1
+                                for ds in val.dataset.datasets for ep in ds.episode_ids))
+        finally:
+            for data in (train, train_inference, val):
+                for ds in data.dataset.datasets:
+                    ds.close()
+
     def model(self, freeze=True):
         with patch('transformers.SiglipVisionConfig.from_pretrained', return_value=SiglipVisionConfig(hidden_size=4)), \
              patch('submodules.model.SiglipVisionModel.from_pretrained', return_value=FakeVision()):
@@ -218,7 +248,8 @@ class TrainingTests(unittest.TestCase):
                 (root/name).write_bytes(b'test')
             source = types.SimpleNamespace(dataset_path=root,contract={'return_scale':4000},
                 index_mapping=np.array([[0,0],[0,1]],dtype=np.int64),
-                returns_data={0:{'return':np.array([-2.,-1.])}}, image_transform='fixed',
+                returns_data={0:{'return':np.array([-2.,-1.])}},
+                preprocessing_config={'version':'letterbox-v1', 'augment_images':False},
                 parquet_files=[root/'episode.parquet'], episode_ids=[0],cameras=['cam2'],
                 video_path=lambda cam,ep:root/'video.mp4')
             class Data:
@@ -231,6 +262,12 @@ class TrainingTests(unittest.TestCase):
             self.assertNotEqual(original,changed)
             cfg['precision']='fp32'
             self.assertNotEqual(changed,cache_identity(Data(),cfg,'train')[0])
+            before = cache_identity(Data(),cfg,'train')[0]
+            source.preprocessing_config['return_scale']=3769
+            self.assertNotEqual(before,cache_identity(Data(),cfg,'train')[0])
+            source.preprocessing_config['augment_images']=True
+            with self.assertRaisesRegex(ValueError,'deterministic'):
+                cache_identity(Data(),cfg,'train')
 
     def test_local_image_only_avoids_repeated_parquet_reads(self):
         from submodules.datasets import SimpleValueDataset
@@ -240,10 +277,11 @@ class TrainingTests(unittest.TestCase):
         with patch('submodules.datasets.pq.read_table',side_effect=AssertionError('parquet reread')):
             sample=ds[0]
         self.assertEqual(tuple(sample['images']['observation.images.cam2'].shape),(3,224,224))
-        from transformers import SiglipImageProcessor
-        processor=SiglipImageProcessor.from_pretrained(str(ROOT/'models/siglip2-so400m-patch14-224'),local_files_only=True)
-        reference=processor(images=ds._read_video_frame('cam2',26,0),return_tensors='pt')['pixel_values'][0]
-        torch.testing.assert_close(sample['images']['observation.images.cam2'],reference,atol=1e-6,rtol=1e-6)
+        image=sample['images']['observation.images.cam2']
+        # 640x360 is letterboxed to 224x126 with 49 black rows on each side.
+        torch.testing.assert_close(image[:,:49,:],torch.full_like(image[:,:49,:],-1))
+        torch.testing.assert_close(image[:,175:,:],torch.full_like(image[:,175:,:],-1))
+        self.assertGreater(float(image[:,49:175,:].max()),-0.5)
         self.assertEqual(float(ds.returns_data[26]['return'][-1])/ds.return_scale,-.5)
         ds.close()
         joint_ds=SimpleValueDataset(path,episodes=[26],cameras=[],include_state=True,include_actions=True)

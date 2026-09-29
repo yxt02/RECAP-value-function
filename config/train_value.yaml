@@ -1,20 +1,23 @@
 # Main value-training path: SigLIP2 patch sequence + Gemma3 task text + Gemma value expert.
 architecture: recap_patch_gemma_expert
 adaptation_config: config/z02_data.yaml
-cameras: [cam2]
+cameras: [cam2, cam3, cam4]
 siglip_path: models/siglip2-so400m-patch14-224
 gemma3_path: models/gemma-3-270m
 tokenizer_path: models/gemma-3-270m
-critic_expert_variant: gemma_1m
+critic_expert_variant: gemma_50m  # 18 expert layers read all 18 Gemma3 KV layers
 num_bins: 201
-max_token_len: 50
+max_token_len: 200
 precision: bf16
+bf16_keep_fp32_layers: true
+value_normalization: train_return_min
+train_image_augmentation: true
 freeze_vision_encoder: false
 freeze_vlm: false
 freeze_value_expert: false
 gradient_checkpointing: true
 feature_cache: false
-batch_size: 4
+batch_size: 2  # per GPU on the planned 2 x 48GB setup; smoke_test forces 1
 gradient_accumulation_steps: 4
 num_workers: 4
 eval_num_workers: 2

@@ -42,9 +42,9 @@ def main(argv=None):
     if len(labels['return']) != len(block):
         raise SystemExit(f'Frame count mismatch: scores {len(block)} vs returns {len(labels["return"])}')
     import json
-    contract = json.loads((raw / 'meta' / 'returns_z02_fail2000_v1.json').read_text())
-    scale = float(contract['return_scale'])
-    actual = labels['return'].astype(float) / scale
+    manifest = json.loads((result / 'manifest.json').read_text())
+    scale = float(manifest['return_scale'])
+    actual = np.clip(labels['return'].astype(float) / scale, -1.0, 0.0)
 
     t = block.timestamp.to_numpy(float)
     model = block.value.to_numpy(float)

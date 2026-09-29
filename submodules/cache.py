@@ -14,7 +14,7 @@ from submodules.contracts import resolve_path
 from .runtime import make_loader, autocast
 
 logger = logging.getLogger(__name__)
-CACHE_VERSION = 'siglip-mean-patch-v2'
+CACHE_VERSION = 'siglip-mean-patch-v3'
 
 
 def sha256(path):
@@ -33,12 +33,14 @@ def cache_identity(dataset, config, split):
     base = dataset.dataset if isinstance(dataset, Subset) else dataset
     sources = []
     for ds in base.datasets:
+        if ds.preprocessing_config['augment_images']:
+            raise ValueError('Feature caching requires deterministic images; disable augmentation')
         files = [*ds.parquet_files]
         files.extend(ds.video_path(cam, ep) for ep in ds.episode_ids for cam in ds.cameras)
         sources.append({'dataset':ds.dataset_path.name, 'contract':ds.contract,
             'indices_sha256':hashlib.sha256(ds.index_mapping.tobytes()).hexdigest(),
             'targets_sha256':hashlib.sha256(b''.join(np.asarray(ds.returns_data[ep]['return'], dtype=np.float32).tobytes() for ep in ds.episode_ids)).hexdigest(),
-            'transform':repr(ds.image_transform),
+            'transform':ds.preprocessing_config,
             'files':[(str(p.relative_to(ds.dataset_path)), p.stat().st_size, p.stat().st_mtime_ns) for p in files]})
     identity = {'version':CACHE_VERSION, 'split':split, 'weights':weights,
                 'processor':sha256(model_path/'preprocessor_config.json'),

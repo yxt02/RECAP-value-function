@@ -5,6 +5,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 from omegaconf import OmegaConf
 from torch.utils.data import ConcatDataset, DataLoader, Subset, BatchSampler, RandomSampler, SequentialSampler
@@ -40,10 +41,37 @@ def load_config(path):
     return config
 
 
-def raw_dataset(config, split):
+def train_return_scale(config):
+    """Use only training episodes to define the shared |return_min| scale."""
+    source = OmegaConf.load(resolve_path(config['adaptation_config']))
+    split_file = resolve_path(source.output_dir) / 'train.json'
+    minimum = 0.0
+    found = False
+    for spec in source.datasets:
+        selected = read_split(split_file, spec.name)
+        if not selected:
+            continue
+        path = resolve_path(source.data_dir) / spec.name / 'meta' / f'returns_{source.tag}.parquet'
+        table = pq.read_table(path, columns=['episode_index', 'return']).to_pandas()
+        values = table.loc[table.episode_index.isin(selected), 'return'].to_numpy(dtype=np.float64)
+        if not len(values) or not np.isfinite(values).all() or np.max(values) > 0:
+            raise ValueError(f'Invalid training returns in {path}')
+        minimum = min(minimum, float(np.min(values)))
+        found = True
+    if not found or minimum >= 0:
+        raise ValueError('No negative training return available for return_min normalization')
+    return -minimum
+
+
+def raw_dataset(config, split, *, training=False):
     if split not in ('train', 'val', 'test'):
         raise ValueError(split)
     source = OmegaConf.load(resolve_path(config['adaptation_config']))
+    return_mode = config.get('value_normalization', 'contract_scale')
+    if return_mode not in ('contract_scale', 'train_return_min'):
+        raise ValueError(f'Unknown value_normalization: {return_mode}')
+    value_scale = (float(config.get('value_scale') or train_return_scale(config))
+                   if return_mode == 'train_return_min' else None)
     split_file = resolve_path(source.output_dir) / f'{split}.json'
     datasets = []
     for spec in source.datasets:
@@ -52,6 +80,8 @@ def raw_dataset(config, split):
         ds = SimpleValueDataset(resolve_path(source.data_dir) / spec.name,
             tag=source.tag, split_file=split_file, cameras=config['cameras'],
             include_state=False, include_actions=False,
+            return_scale=value_scale, clip_normalized_returns=return_mode == 'train_return_min',
+            augment_images=training and split == 'train' and bool(config.get('train_image_augmentation', False)),
             image_processor_path=resolve_path(config['siglip_path']),
             cache_episodes=4, cache_videos=int(config.get('video_cache_handles', 4)))
         for key in ('tag', 'gamma', 'failure_reward', 'return_scale', 'max_episode_steps'):
@@ -80,7 +110,8 @@ class CappedBatchSampler:
         return islice(iter(self.batches), self.limit)
 
 
-def make_loader(dataset, config, split, *, batch_size=None, workers=None, sequential=False, max_batches=None):
+def make_loader(dataset, config, split, *, batch_size=None, workers=None, sequential=False,
+                max_batches=None, sampler=None):
     if hasattr(dataset, 'features') and hasattr(dataset, 'targets'):
         from .feature_loader import resident_loader
         resident = resident_loader(dataset, config, split, int(batch_size or config['batch_size']), max_batches)
@@ -89,14 +120,21 @@ def make_loader(dataset, config, split, *, batch_size=None, workers=None, sequen
     if workers is None:
         workers = int(config['num_workers'] if split == 'train' else config['eval_num_workers'])
     generator = torch.Generator().manual_seed(int(config.get('seed', 42)))
-    kwargs = dict(batch_size=int(batch_size or config['batch_size']), shuffle=split=='train' and not sequential,
+    kwargs = dict(batch_size=int(batch_size or config['batch_size']),
+                  shuffle=split=='train' and not sequential and sampler is None,
                   num_workers=workers, pin_memory=bool(config['pin_memory'] and torch.cuda.is_available()),
                   generator=generator)
+    if sampler is not None:
+        kwargs['sampler'] = sampler
     if max_batches is not None:
         if int(max_batches) < 1:
             raise ValueError('max_batches must be positive')
-        sampler = RandomSampler(dataset, generator=generator) if kwargs.pop('shuffle') else SequentialSampler(dataset)
-        batches = BatchSampler(sampler, kwargs.pop('batch_size'), drop_last=False)
+        source_sampler = kwargs.pop('sampler', None)
+        if source_sampler is None:
+            source_sampler = (RandomSampler(dataset, generator=generator)
+                              if kwargs.pop('shuffle') else SequentialSampler(dataset))
+        kwargs.pop('shuffle', None)
+        batches = BatchSampler(source_sampler, kwargs.pop('batch_size'), drop_last=False)
         kwargs['batch_sampler'] = CappedBatchSampler(batches, max_batches)
     if workers:
         kwargs.update(worker_init_fn=init_worker, multiprocessing_context='spawn',

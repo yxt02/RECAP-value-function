@@ -9,6 +9,7 @@ import string
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 from transformers import AutoTokenizer, Gemma3ForCausalLM, SiglipVisionModel
 from transformers.cache_utils import DynamicCache
 from transformers.models.gemma.configuration_gemma import GemmaConfig
@@ -105,6 +106,14 @@ class RecapValueModel(nn.Module):
                                      **EXPERT_VARIANTS[variant])
         if expert_config.head_dim != self.gemma3.config.head_dim:
             raise ValueError('Expert and Gemma3 KV head dimensions differ')
+        self.prefix_depth = expert_config.num_hidden_layers
+        if self.prefix_depth > len(self.gemma3.model.layers):
+            raise ValueError('Expert cannot read more KV layers than the Gemma3 backbone provides')
+        # Expert layer i reads prefix KV layer i, as in RLinf. A shallow debug
+        # expert cannot use later prefix layers, so skip their forward computation.
+        self.gemma3.config.num_hidden_layers = self.prefix_depth
+        for layer in self.gemma3.model.layers[self.prefix_depth:]:
+            layer.requires_grad_(False)
         self.expert = GemmaModel(expert_config).to(dtype=dtype)
         self.expert.embed_tokens = None
         self.image_projection = nn.Linear(vision_width, vlm_width).to(dtype=dtype)
@@ -113,6 +122,13 @@ class RecapValueModel(nn.Module):
         self.cls_embedding = nn.Parameter(torch.randn(1, 1, expert_config.hidden_size, dtype=dtype) * 0.02)
         self.value_projection = nn.Linear(expert_config.hidden_size, config['num_bins']).to(dtype=dtype)
         self.register_buffer('atoms', torch.linspace(-1., 0., config['num_bins']), persistent=False)
+        if dtype == torch.bfloat16 and config.get('bf16_keep_fp32_layers', False):
+            keep_fp32 = ('embeddings.patch_embedding.weight', 'embeddings.patch_embedding.bias',
+                         'embeddings.position_embedding.weight', 'input_layernorm',
+                         'post_attention_layernorm', 'model.norm')
+            for name, parameter in self.named_parameters():
+                if any(part in name for part in keep_fp32):
+                    parameter.data = parameter.data.float()
         if self.freeze_vision_encoder:
             self.vision_tower.requires_grad_(False)
         if self.freeze_vlm:
@@ -133,12 +149,34 @@ class RecapValueModel(nn.Module):
         return self
 
     def gradient_checkpointing_enable(self):
+        # HF text-layer checkpointing clears past_key_values. Checkpoint pure
+        # prefix/expert stages instead, passing tensor KV tuples between them.
         self.gradient_checkpointing_enabled = True
-        self.gemma3.model.gradient_checkpointing = True
         if not self.freeze_vision_encoder:
-            self.vision_tower.gradient_checkpointing = True
-        if not self.freeze_value_expert:
-            self.expert.gradient_checkpointing = True
+            self.vision_tower.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={'use_reentrant': False})
+
+    def gradient_checkpointing_disable(self):
+        self.gradient_checkpointing_enabled = False
+        self.vision_tower.gradient_checkpointing_disable()
+
+    def _run_stage(self, function, *args):
+        if self.gradient_checkpointing_enabled and self.training and torch.is_grad_enabled():
+            return checkpoint(function, *args, use_reentrant=False)
+        return function(*args)
+
+    def _prefix_kv(self, prefix, attention, positions):
+        out = self.gemma3.model(inputs_embeds=prefix, attention_mask=attention,
+                               position_ids=positions, past_key_values=DynamicCache(), use_cache=True)
+        return out.past_key_values.to_legacy_cache()
+
+    def _expert_hidden(self, cls, attention, positions, kv):
+        # Expert attention appends its own K/V: never mutate the prefix cache or
+        # a cache captured by a checkpoint closure across recomputations.
+        cache = DynamicCache.from_legacy_cache(kv)
+        out = self.expert(inputs_embeds=cls, attention_mask=attention,
+                          position_ids=positions, past_key_values=cache, use_cache=False)
+        return out.last_hidden_state[:, -1, :]
 
     def _encode_image(self, image):
         with torch.no_grad() if self.freeze_vision_encoder else nullcontext():
@@ -146,6 +184,12 @@ class RecapValueModel(nn.Module):
         return self.image_projection(patches.to(self.image_projection.weight.dtype))
 
     def forward(self, images, prompts, return_distribution=False, image_masks=None):
+        device = next(iter(images.values())).device
+        enabled = device.type == 'cuda' and self.config['precision'] == 'bf16'
+        with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=enabled):
+            return self._forward(images, prompts, return_distribution, image_masks)
+
+    def _forward(self, images, prompts, return_distribution=False, image_masks=None):
         if not isinstance(prompts, (list, tuple)) or not prompts:
             raise ValueError('A prompt string is required for every image')
         keys = [f'observation.images.{cam}' for cam in self.cameras]
@@ -177,19 +221,14 @@ class RecapValueModel(nn.Module):
         prefix_mask = padding[:, None, :] & padding[:, :, None]
         mask_dtype = self.gemma3.model.layers[0].self_attn.q_proj.weight.dtype
         prefix_attention = torch.where(prefix_mask[:, None], 0., torch.finfo(mask_dtype).min).to(mask_dtype)
-        cache = DynamicCache()
-        prefix_out = self.gemma3.model(inputs_embeds=prefix, attention_mask=prefix_attention,
-                                       position_ids=padding.long().cumsum(1)-1,
-                                       past_key_values=cache, use_cache=True)
-        cache = prefix_out.past_key_values
+        kv = self._run_stage(self._prefix_kv, prefix, prefix_attention, padding.long().cumsum(1)-1)
         cls = self.cls_embedding.expand(batch_size, -1, -1)
         suffix_padding = torch.cat([padding, torch.ones(batch_size, 1, dtype=torch.bool, device=prefix.device)], 1)
         suffix_attention = torch.where(suffix_padding[:, None, None, :],
                                        0., torch.finfo(mask_dtype).min).to(mask_dtype)
-        suffix_out = self.expert(inputs_embeds=cls, attention_mask=suffix_attention,
-                                 position_ids=padding.long().sum(1, keepdim=True),
-                                 past_key_values=cache, use_cache=False)
-        logits = self.value_projection(suffix_out.last_hidden_state[:, -1, :]).float()
+        hidden = self._run_stage(self._expert_hidden, cls, suffix_attention,
+                                 padding.long().sum(1, keepdim=True), kv)
+        logits = self.value_projection(hidden).float()
         probabilities = logits.softmax(-1)
         value = (probabilities * self.atoms).sum(-1, keepdim=True)
         if return_distribution:

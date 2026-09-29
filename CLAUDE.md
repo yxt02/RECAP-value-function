@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Standalone implementation of the RECAP value function for z02 robot data (references RLinf's RECAP flow, but has no runtime dependency on RLinf). The repo covers data adaptation, value-model training, independent test-set evaluation, and offline advantage-label export. Documentation and user-facing messages are in Chinese; code and comments are mostly English. See `README.md` for method background and `docs/usage.md` for the full input/output contract of every command.
 
-Current status: the new Gemma3 architecture has only passed smoke tests — there is no formally trained checkpoint yet. `checkpoints/optimized/best_model.pt` and `docs/results.md` belong to the old averaged-feature baseline and must not be treated as results for the current architecture.
+Current status: the new Gemma3 architecture has only passed smoke tests — there is no formally trained checkpoint yet. Historical result files and evaluation documents have been removed; do not present smoke output as model-quality evidence.
 
 ## Commands
 
@@ -19,7 +19,7 @@ python scripts/prepare_data.py --all              # regenerate returns + splits 
 
 # Training (config: config/train_value.yaml)
 python scripts/train.py --smoke_test              # small-sample smoke run → artifacts/performance/smoke-recap/
-python scripts/train.py                           # full run → checkpoints/recap_patch/best_model.pt
+torchrun --standalone --nproc_per_node=2 scripts/train.py  # two-GPU run → checkpoints/recap_patch/best_model.pt
 bash run_train.sh [--smoke_test] [--dry-run]      # prepare_data + train sequence
 
 # Evaluation (needs CUDA/BF16 for the new model)
@@ -55,10 +55,10 @@ Dispatch points: `training_workflow.train()` (line ~147) branches on config; `ev
 
 ### Data flow
 
-- `config/z02_data.yaml` describes the four raw batches under `data/raw/`, camera `cam2`, the 22-dim joint convention, result overrides (the `2026.09.16_error` batch is all-failure), and train/val/test splits. `scripts/prepare_data.py` (→ `submodules/data_workflow.py`) audits and writes `meta/returns_<tag>.parquet` sidecars plus `data/splits/{train,val,test}.json`; it never modifies raw frame parquets or videos.
-- Frames are decoded online from videos during training (no image-feature cache in the new architecture). A frame is identified by `(dataset_id, episode_index, frame_index)`.
-- Reward contract: non-terminal `-1`, success `0`, failure `-2000`; returns scaled by `/4000` into `[-1,0]`. Joint states and actions are stored but never enter the value model.
-- `config/train_value.yaml` is the main training config: three independent freeze switches and learning rates (`vision_lr`, `gemma_lr`, `expert_lr`), BF16, gradient checkpointing, gradient accumulation, `critic_expert_variant` sizes (`gemma_1m` default … `gemma_2b`). Relative paths resolve against the repo root via `submodules.contracts.resolve_path`.
+- `config/z02_data.yaml` describes the four raw batches under `data/raw/`, cameras `cam2`/`cam3`/`cam4`, the 22-dim joint convention, result overrides (the `2026.09.16_error` batch is all-failure), and train/val/test splits. `scripts/prepare_data.py` (→ `submodules/data_workflow.py`) audits and writes `meta/returns_<tag>.parquet` sidecars plus `data/splits/{train,val,test}.json`; it never modifies raw frame parquets or videos.
+- Frames are decoded online from videos during training (no image-feature cache in the new architecture), aspect-preserving letterboxed to 224×224, and augmented only when `raw_dataset(..., training=True)` is used by the training loop. A frame is identified by `(dataset_id, episode_index, frame_index)`.
+- Reward contract: non-terminal `-1`, success `0`, failure `-2000`. Adaptation retains `/4000` for its original data contract. The new critic uses the absolute train-split minimum return (currently 3769) as one shared value scale; out-of-range val/test targets are clipped to `[-1,0]`. Advantage uses the checkpoint's scale. Joint states and actions are stored but never enter the value model.
+- `config/train_value.yaml` is the main training config: three independent freeze switches and learning rates (`vision_lr`, `gemma_lr`, `expert_lr`), BF16 with selected FP32 layers, gradient checkpointing, gradient accumulation, 200 task tokens, and `critic_expert_variant` sizes (`gemma_50m` default … `gemma_2b`). `torchrun` uses DDP, per-GPU batch size, distributed train sampling, duplicate-free validation sampling, and rank-0 checkpoint writes. Relative paths resolve against the repo root via `submodules.contracts.resolve_path`.
 
 ### Outputs
 
@@ -68,3 +68,5 @@ Dispatch points: `training_workflow.train()` (line ~147) branches on config; `ev
 ### Tests
 
 `tests/` is unittest-based and CPU-fast; pretrained tokenizer files under `models/` are used directly (`local_files_only`). `tests/test_cli.py` asserts every entry script's `--help` exits 0 — add any new entry script to its `SCRIPTS_DIR` map.
+
+Gradient checkpointing uses HF non-reentrant layers for vision and separate non-reentrant prefix/expert stages, passing tensor KV tuples and creating a fresh cache per invocation. Do not enable HF text-layer checkpointing, which clears past_key_values in the current environment. Expert i reads prefix KV i; shallow experts skip unread prefix layers. Legacy cache identity uses dataset.preprocessing_config (v3), never image_transform.
